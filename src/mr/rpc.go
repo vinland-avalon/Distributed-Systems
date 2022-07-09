@@ -23,8 +23,42 @@ type ExampleReply struct {
 }
 
 // Add your RPC definitions here.
+type CheckStatusReq struct {
 
+}
+type CHeckStatusReap struct {
+	Status int
+}
 
+type GetMapKVReq struct {
+
+}
+type GetMapKVResp struct {
+	Index int
+	Need bool
+
+}
+
+type FinishMapReq struct {
+	Index int
+}
+type FinishMapResp struct {
+}
+
+type GetReduceKVReq struct {
+
+}
+type GetReduceKVResp struct {
+	Index int
+	Need bool
+	MapLen int
+}
+
+type FinishReduceReq struct {
+	Index int
+}
+type FinishReduceResp struct {
+}
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
 // Can't use the current directory since
