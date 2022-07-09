@@ -36,6 +36,87 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 
+	// //1. Send A message to check the status of coordinator
+	// res := CheckStatusOfCoordinator()
+	// if res == 0 {
+	// 	return
+	// }
+	//2. Decide Works if keep alive, then its identification: mapper/reducer
+	while true {
+		res = DecideRole()
+		if res == 0 {
+			return
+		}
+		else if res == 1 {
+			//3. if mapper: 
+			// rpc call, return corresponding task (key, also means filename); 
+			getMapKVReq := GetMapKVReq{}
+			getMapKVResp := GetMapKVResp{}
+			ok := GetMapKV("Coordinator.GetMapKV", &getMapKVReq, &getMapKVResp)
+			if ok == false {
+				return
+			}
+			if getMapKVResp.Need == false {
+				time.Sleep(time.Second / 2)
+				continue
+			}
+			mapperIndex := getMapKVResp.Index
+			// mapf; 
+			kva := mapf(getMapKVResp.key, getMapKVResp.value)
+			// store the mapresult, using ihash to decide file-name
+			for _, kv := range kva {
+				fileName := ("mr-" + string(index) + "-" + ihash(string(kv.Key)))
+				err := mapAppendToFile(fileName, kva)
+				if err != nil {
+					return
+				}
+			}
+			// rpc return res
+			finishMapReq := FinishMapReq{
+				Index := mapperIndex
+			}
+			finishMapResp := FinishMapResp{}
+			ok := FinishMap("Coordinator.FinishMap", &finishMapReq, &finishMapResp)
+			if ok == false {
+				return
+			}
+		} else if res == 2 {
+			//3. if reducer:
+			getReduceKVReq := GetReduceKVReq{}
+			getReduceKVResp := GetReduceKVResp{}
+			// rpc call, return corresponding task (key, one to ten); 
+			ok := getReduceKV("Coordinator.GetReduceKV", &getReduceKVReq, &getReduceKVResp)
+			if ok == false {
+				return
+			} 
+			if getReduceKVResp.Need == false {
+				time.Sleep(time.Second / 2)
+				continue
+			}
+			reducerIndex := getReduceKVResp.Index
+			mapLen := getReduceKVResp.MapLen
+			// read len(inputFiles) files and make values for each word;
+			data := make(map[string][]string)
+			for i := 0 ; i < mapLen ; i++{
+				fileName := ("mr-" + string(i) + "-" + string(reducerIndex))
+				addValue(data, fileName)
+			}
+			// each word and its values -> reducef 
+			// store in one output file
+			outputFileName := ("mr-out-" + string(reducerIndex))
+			for key, values := range data {
+				output := reducef(key, values)
+				reduceAppendToFile(outputFileName, key, output)
+			}
+			ok := FinishReduce("Coordinator.FinishReduce", &finishReduceReq, &finishReduceResp)
+			if ok == false {
+				return
+			}
+			
+		} else {
+			time.Sleep(time.Second / 2)
+		}
+	}
 }
 
 //
@@ -64,6 +145,45 @@ func CallExample() {
 		fmt.Printf("reply.Y %v\n", reply.Y)
 	} else {
 		fmt.Printf("call failed!\n")
+	}
+}
+
+// 0 -> no need to keep alive, just quit
+// 1 -> needed
+func CheckStatusOfCoordinator() int {
+	req := CheckStatusOfCoordinatorReq{}
+	resp := CheckStatusOfCoordinatorResp{}
+	ok := call("Coordinator.CheckStatus", &req, &resp)
+	if ok == false {
+		return 0
+	}
+	if resp.Status == 4 {
+		return 0
+	}
+	return 1
+}
+// 0 -> no need to keep alive, just quit
+// 1 -> mapper
+// 2 -> reducer
+// 3 -> waiting
+func DecideRole() int {
+	req := CheckStatusReq{}
+	resp := CheckStatusResp{}
+	ok := call("Coordinator.CheckStatus", &req, &resp)
+	if ok == false {
+		return 0
+	}
+	if resp.Status == 4{
+		return 0
+	}
+	if resp.Status == 0 {
+		return 1
+	}
+	if resp.Status == 2 {
+		return 2
+	}
+	if resp.Status == 1 || resp.Status == 3 {
+		return 3
 	}
 }
 
