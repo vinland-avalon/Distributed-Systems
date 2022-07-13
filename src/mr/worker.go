@@ -1,6 +1,9 @@
 package mr
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 import "log"
 import "net/rpc"
 import "hash/fnv"
@@ -42,17 +45,16 @@ func Worker(mapf func(string, string) []KeyValue,
 	// 	return
 	// }
 	//2. Decide Works if keep alive, then its identification: mapper/reducer
-	while true {
-		res = DecideRole()
+	for {
+		res := DecideRole()
 		if res == 0 {
 			return
-		}
-		else if res == 1 {
+		} else if res == 1 {
 			//3. if mapper: 
 			// rpc call, return corresponding task (key, also means filename); 
 			getMapKVReq := GetMapKVReq{}
 			getMapKVResp := GetMapKVResp{}
-			ok := GetMapKV("Coordinator.GetMapKV", &getMapKVReq, &getMapKVResp)
+			ok := call("Coordinator.GetMapKV", &getMapKVReq, &getMapKVResp)
 			if ok == false {
 				return
 			}
@@ -65,8 +67,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			kva := mapf(getMapKVResp.key, getMapKVResp.value)
 			// store the mapresult, using ihash to decide file-name
 			for _, kv := range kva {
-				fileName := ("mr-" + string(index) + "-" + ihash(string(kv.Key)))
-				err := mapAppendToFile(fileName, kva)
+				fileName := ("mr-" + string(mapperIndex) + "-" + ihash(string(kv.Key)))
+				err := kvAppendToFile(fileName, kv.Key, kv.Value)
 				if err != nil {
 					return
 				}
@@ -76,7 +78,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				Index := mapperIndex
 			}
 			finishMapResp := FinishMapResp{}
-			ok := FinishMap("Coordinator.FinishMap", &finishMapReq, &finishMapResp)
+			ok = call("Coordinator.FinishMap", &finishMapReq, &finishMapResp)
 			if ok == false {
 				return
 			}
@@ -85,7 +87,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			getReduceKVReq := GetReduceKVReq{}
 			getReduceKVResp := GetReduceKVResp{}
 			// rpc call, return corresponding task (key, one to ten); 
-			ok := getReduceKV("Coordinator.GetReduceKV", &getReduceKVReq, &getReduceKVResp)
+			ok := call("Coordinator.GetReduceKV", &getReduceKVReq, &getReduceKVResp)
 			if ok == false {
 				return
 			} 
@@ -106,15 +108,50 @@ func Worker(mapf func(string, string) []KeyValue,
 			outputFileName := ("mr-out-" + string(reducerIndex))
 			for key, values := range data {
 				output := reducef(key, values)
-				reduceAppendToFile(outputFileName, key, output)
+				kvAppendToFile(outputFileName, key, output)
 			}
-			ok := FinishReduce("Coordinator.FinishReduce", &finishReduceReq, &finishReduceResp)
+			ok := call("Coordinator.FinishReduce", &finishReduceReq, &finishReduceResp)
 			if ok == false {
 				return
 			}
 			
 		} else {
 			time.Sleep(time.Second / 2)
+		}
+	}
+}
+
+func addValue(data map[string][]string, fileName string) error {
+	if data == nil {
+		return errors.New("data is nil")
+	}
+	// openning and close file
+	filePath := os.Getwd() + fileName
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		return errors.New(filePath + " file not exists")
+	}
+	file, err := os.OpenFile(filePath, os.RDONLY, 0666)
+    if err != nil {
+        fmt.Println("[addValue] fail to open file", err)
+		return err
+    }
+	defer file.Close()
+
+	// buff read
+	buff := bufio.NewReader(file)
+	for {
+		line, _, eof := buff.ReadLine()
+		if eof == io.EOF {
+			break
+		}
+		// stringKV is of []string type, including Key, Value
+		stringKV := strings.Split(string(line))
+		word := stringKV[0]
+		count := stringKV[1]
+		if countArray, ok := data[word]; ok {
+			countArray = append(countArray, count)
+		} else {
+			data[word] = make([]string, 1, count)
 		}
 	}
 }
@@ -208,4 +245,18 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+func kvAppendToFile(fileName, key, value string) {
+	file, err := os.OpenFile(os.Getwd() + fileName, os.O_APPEND|os.O_CREATE, 0666)
+    if err != nil {
+        fmt.Println("[mapAppendToFile] fail to open file", err)
+    }
+	defer file.Close()
+
+    write := bufio.NewWriter(file)
+    for i := 0; i < 5; i++ {
+        write.WriteString(key + "\t" + value + "\n")
+    }
+    write.Flush()
 }
