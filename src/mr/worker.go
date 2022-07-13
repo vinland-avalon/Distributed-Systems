@@ -75,7 +75,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 			// rpc return res
 			finishMapReq := FinishMapReq{
-				Index := mapperIndex
+				Index : mapperIndex
 			}
 			finishMapResp := FinishMapResp{}
 			ok = call("Coordinator.FinishMap", &finishMapReq, &finishMapResp)
