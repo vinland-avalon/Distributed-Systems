@@ -81,8 +81,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			kva := mapf(key, value)
 			// store the mapresult, using ihash to decide file-name
 			for i, kv := range kva {
-				fileName := fmt.Sprintf("../mr-%v-%v", mapperIndex, ihash(kv.Key))
-				if i%10 == 0 {
+				fileName := fmt.Sprintf("../mr-%v-%v", mapperIndex, (ihash(kv.Key))%10)
+				if i%200 == 0 {
 					log.Printf("[Worker] after mapf, store kv:%v in file:%v", kv, fileName)
 				}
 				err := kvAppendToFile(fileName, kv.Key, kv.Value)
