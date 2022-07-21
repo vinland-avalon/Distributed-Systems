@@ -85,7 +85,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				if i%200 == 0 {
 					log.Printf("[Worker] after mapf, store kv:%v in file:%v", kv, fileName)
 				}
-				err := kvAppendToFile(fileName, kv.Key, kv.Value)
+				err := KvAppendToFile(fileName, kv.Key, kv.Value)
 				if err != nil {
 					log.Println(err.Error())
 					return
@@ -131,7 +131,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			outputFileName := fmt.Sprintf("mr-out-%v", reducerIndex)
 			for key, values := range data {
 				output := reducef(key, values)
-				err := kvAppendToFile(outputFileName, key, output)
+				err := KvAppendToFile(outputFileName, key, output)
 				if err != nil {
 					log.Printf(err.Error())
 					return
@@ -297,19 +297,17 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	return false
 }
 
-func kvAppendToFile(fileName, key, value string) error {
+func KvAppendToFile(fileName, key, value string) error {
 	file, err := os.OpenFile(fileName, os.O_APPEND|os.O_CREATE, 0666)
 	if err != nil {
-		fmt.Printf("[kvAppendToFile] fail to open file: %v\n", err)
-		err = fmt.Errorf("[kvAppendToFile] fail to open file: %v\n", err)
+		fmt.Printf("[KvAppendToFile] fail to open file: %v\n", err)
+		err = fmt.Errorf("[KvAppendToFile] fail to open file: %v\n", err)
 		return err
 	}
 	defer file.Close()
 
 	write := bufio.NewWriter(file)
-	for i := 0; i < 5; i++ {
-		write.WriteString(key + "\t" + value + "\n")
-	}
+	write.WriteString(key + "\t" + value + "\n")
 	write.Flush()
 	return nil
 }
