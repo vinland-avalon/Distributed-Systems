@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 )
 import "log"
@@ -298,7 +299,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 }
 
 func KvAppendToFile(fileName, key, value string) error {
-	file, err := os.OpenFile(fileName, os.O_APPEND|os.O_CREATE, 0666)
+	file, err := os.OpenFile(fileName, os.O_APPEND|os.O_CREATE|syscall.O_WRONLY, 0666)
 	if err != nil {
 		fmt.Printf("[KvAppendToFile] fail to open file: %v\n", err)
 		err = fmt.Errorf("[KvAppendToFile] fail to open file: %v\n", err)
