@@ -81,11 +81,11 @@ func Worker(mapf func(string, string) []KeyValue,
 			// mapf;
 			kva := mapf(key, value)
 			// store the mapresult, using ihash to decide file-name
-			for i, kv := range kva {
-				fileName := fmt.Sprintf("../mr-%v-%v", mapperIndex, (ihash(kv.Key))%10)
-				if i%200 == 0 {
-					log.Printf("[Worker] after mapf, store kv:%v in file:%v", kv, fileName)
-				}
+			for _, kv := range kva {
+				fileName := fmt.Sprintf("mr-%v-%v", mapperIndex, (ihash(kv.Key))%10)
+				//if i%200 == 0 {
+				//	log.Printf("[Worker] after mapf, store kv:%v in file:%v", kv, fileName)
+				//}
 				err := KvAppendToFile(fileName, kv.Key, kv.Value)
 				if err != nil {
 					log.Println(err.Error())
@@ -200,7 +200,7 @@ func addValue(data map[string][]string, fileName string) error {
 		count := stringKV[1]
 		if _, ok := data[word]; ok {
 			data[word] = append(data[word], count)
-			log.Printf("[addValue] word: %v, countArray: %v", word, data[word])
+			// log.Printf("[addValue] word: %v, countArray: %v", word, len(data[word]))
 		} else {
 			data[word] = make([]string, 0)
 			data[word] = append(data[word], count)
