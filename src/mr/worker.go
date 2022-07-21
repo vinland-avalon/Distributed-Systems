@@ -104,6 +104,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 		} else if res == ROLE_REDUCER {
 			//3. if reducer:
+			log.Println("[Worker] now as a reducer")
 			getReduceKVReq := GetReduceKVReq{}
 			getReduceKVResp := GetReduceKVResp{}
 			// rpc call, return corresponding task (key, one to ten);
@@ -118,6 +119,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			reducerIndex := getReduceKVResp.Index
 			mapLen := getReduceKVResp.MapLen
 			// read len(inputFiles) files and make values for each word;
+			log.Printf("[Worker] call GetReduceKV rpc, resp: %v\n", getReduceKVResp)
 			data := make(map[string][]string)
 			for i := 0; i < mapLen; i++ {
 				fileName := fmt.Sprintf("../mr-%v-%v", i, reducerIndex)
@@ -130,6 +132,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			// each word and its values -> reducef
 			// store in one output file
 			outputFileName := fmt.Sprintf("mr-out-%v", reducerIndex)
+			log.Printf("[Worker] outputFile: %v\n", outputFileName)
 			for key, values := range data {
 				output := reducef(key, values)
 				err := KvAppendToFile(outputFileName, key, output)
