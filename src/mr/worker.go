@@ -198,8 +198,9 @@ func addValue(data map[string][]string, fileName string) error {
 		stringKV := strings.Split(string(line), "\t")
 		word := stringKV[0]
 		count := stringKV[1]
-		if countArray, ok := data[word]; ok {
-			countArray = append(countArray, count)
+		if _, ok := data[word]; ok {
+			data[word] = append(data[word], count)
+			log.Printf("[addValue] word: %v, countArray: %v", word, data[word])
 		} else {
 			data[word] = make([]string, 0)
 			data[word] = append(data[word], count)
