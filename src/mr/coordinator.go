@@ -2,6 +2,7 @@ package mr
 
 import (
 	"log"
+	"sync"
 )
 import "net"
 import "os"
@@ -10,6 +11,8 @@ import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
+	lk sync.RWMutex
+
 	MapTaskNum       int
 	ReduceTaskNum    int
 	MapTaskStatus    []int
@@ -32,6 +35,10 @@ func (c *Coordinator) CheckStatus(req *CheckStatusReq, resp *CheckStatusResp) er
 }
 
 func (c *Coordinator) GetMapKV(req *GetMapKVReq, resp *GetMapKVResp) error {
+	defer func() {
+		c.lk.Unlock()
+	}()
+	c.lk.Lock()
 	for i, taskStatus := range c.MapTaskStatus {
 		if taskStatus == TASK_STATUS_UNSTARTED {
 			resp.Index = i
@@ -49,6 +56,10 @@ func (c *Coordinator) GetMapKV(req *GetMapKVReq, resp *GetMapKVResp) error {
 }
 
 func (c *Coordinator) GetReduceKV(req *GetReduceKVReq, resp *GetReduceKVResp) error {
+	defer func() {
+		c.lk.Unlock()
+	}()
+	c.lk.Lock()
 	for i, taskStatus := range c.ReduceTaskStatus {
 		if taskStatus == TASK_STATUS_UNSTARTED {
 			resp.Index = i
@@ -66,6 +77,10 @@ func (c *Coordinator) GetReduceKV(req *GetReduceKVReq, resp *GetReduceKVResp) er
 }
 
 func (c *Coordinator) FinishMap(req *FinishMapReq, resp *FinishMapResp) error {
+	defer func() {
+		c.lk.Unlock()
+	}()
+	c.lk.Lock()
 	c.MapTaskStatus[req.Index] = TASK_STATUS_FINISHED
 	if c.Status == STATUS_MAPPER_PROCESS && c.FinishAllMapTask() {
 		c.Status = STATUS_REDUCER_NEEDED
@@ -74,6 +89,10 @@ func (c *Coordinator) FinishMap(req *FinishMapReq, resp *FinishMapResp) error {
 }
 
 func (c *Coordinator) FinishReduce(req FinishReduceReq, resp *FinishReduceResp) error {
+	defer func() {
+		c.lk.Unlock()
+	}()
+	c.lk.Lock()
 	c.ReduceTaskStatus[req.Index] = TASK_STATUS_FINISHED
 	if c.Status == STATUS_REDUCER_PROCESS && c.FinishAllMapTask() {
 		c.Status = STATUS_FINISHED
@@ -114,6 +133,10 @@ func (c *Coordinator) Done() bool {
 
 // RecruitAllMapper to check if status can change (but can be improved using bit calculation)
 func (c *Coordinator) RecruitAllMapper() bool {
+	defer func() {
+		c.lk.RUnlock()
+	}()
+	c.lk.RLock()
 	for _, mapTaskStatus := range c.MapTaskStatus {
 		if mapTaskStatus == TASK_STATUS_UNSTARTED {
 			return false
@@ -123,6 +146,10 @@ func (c *Coordinator) RecruitAllMapper() bool {
 }
 
 func (c *Coordinator) RecruitAllReduce() bool {
+	defer func() {
+		c.lk.RUnlock()
+	}()
+	c.lk.RLock()
 	for _, reduceTaskStatus := range c.ReduceTaskStatus {
 		if reduceTaskStatus == TASK_STATUS_UNSTARTED {
 			return false
@@ -132,6 +159,10 @@ func (c *Coordinator) RecruitAllReduce() bool {
 }
 
 func (c *Coordinator) FinishAllMapTask() bool {
+	defer func() {
+		c.lk.RUnlock()
+	}()
+	c.lk.RLock()
 	for _, mapTaskStatus := range c.MapTaskStatus {
 		if mapTaskStatus != TASK_STATUS_FINISHED {
 			return false
@@ -141,6 +172,10 @@ func (c *Coordinator) FinishAllMapTask() bool {
 }
 
 func (c *Coordinator) RecruitAllReducer() bool {
+	defer func() {
+		c.lk.RUnlock()
+	}()
+	c.lk.RLock()
 	for _, reduceTaskStatus := range c.ReduceTaskStatus {
 		if reduceTaskStatus == TASK_STATUS_UNSTARTED {
 			return false

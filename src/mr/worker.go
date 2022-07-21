@@ -56,13 +56,16 @@ func Worker(mapf func(string, string) []KeyValue,
 		} else if res == ROLE_MAPPER {
 			//3. if mapper:
 			// rpc call, return corresponding task (key, also means filename);
+			log.Println("Now as a mapper")
 			getMapKVReq := GetMapKVReq{}
 			getMapKVResp := GetMapKVResp{}
 			ok := call("Coordinator.GetMapKV", &getMapKVReq, &getMapKVResp)
+			log.Printf("[Worker] call GetMapKV rpc, req:%+v, resp:%+v", getMapKVReq, getMapKVResp)
 			if ok == false {
 				return
 			}
 			if getMapKVResp.Need == false {
+				log.Println("[Worker] no more need to be mapper, just sleep 0.5s")
 				time.Sleep(time.Second / 2)
 				continue
 			}
@@ -77,8 +80,11 @@ func Worker(mapf func(string, string) []KeyValue,
 			// mapf;
 			kva := mapf(key, value)
 			// store the mapresult, using ihash to decide file-name
-			for _, kv := range kva {
+			for i, kv := range kva {
 				fileName := fmt.Sprintf("../mr-%v-%v", mapperIndex, ihash(kv.Key))
+				if i%10 == 0 {
+					log.Printf("[Worker] after mapf, store kv:%v in file:%v", kv, fileName)
+				}
 				err := kvAppendToFile(fileName, kv.Key, kv.Value)
 				if err != nil {
 					log.Println(err.Error())
@@ -90,6 +96,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				Index: mapperIndex,
 			}
 			finishMapResp := FinishMapResp{}
+			log.Println("[Worker] call finishMap rpc")
 			ok = call("Coordinator.FinishMap", &finishMapReq, &finishMapResp)
 			if ok == false {
 				return
