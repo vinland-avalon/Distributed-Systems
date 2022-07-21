@@ -30,6 +30,10 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 }
 
 func (c *Coordinator) CheckStatus(req *CheckStatusReq, resp *CheckStatusResp) error {
+	defer func() {
+		c.lk.RUnlock()
+	}()
+	c.lk.RLock()
 	resp.Status = c.Status
 	return nil
 }
@@ -125,6 +129,10 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
+	defer func() {
+		c.lk.RUnlock()
+	}()
+	c.lk.RLock()
 	if c.Status == STATUS_FINISHED {
 		ret = true
 	}
