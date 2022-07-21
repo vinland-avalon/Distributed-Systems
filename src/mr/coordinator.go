@@ -195,8 +195,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// Your code here.
 	c.ReduceTaskNum = nReduce
 	c.MapTaskNum = len(files)
-	c.MapTaskStatus = make([]int, c.MapTaskNum, 0)
-	c.ReduceTaskStatus = make([]int, c.ReduceTaskNum, 0)
+	c.MapTaskStatus = make([]int, c.MapTaskNum, c.MapTaskNum)
+	c.ReduceTaskStatus = make([]int, c.ReduceTaskNum, c.ReduceTaskNum)
 	c.Status = 0
 	c.TaskKeys = files
 	// c.TaskValues = make([]string, 0)
