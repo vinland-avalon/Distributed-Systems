@@ -38,6 +38,7 @@ func (c *Coordinator) GetMapKV(req *GetMapKVReq, resp *GetMapKVResp) error {
 	defer func() {
 		c.lk.Unlock()
 	}()
+	log.Printf("[GetMapKV] req:%+v", req)
 	c.lk.Lock()
 	for i, taskStatus := range c.MapTaskStatus {
 		if taskStatus == TASK_STATUS_UNSTARTED {
@@ -133,10 +134,6 @@ func (c *Coordinator) Done() bool {
 
 // RecruitAllMapper to check if status can change (but can be improved using bit calculation)
 func (c *Coordinator) RecruitAllMapper() bool {
-	defer func() {
-		c.lk.RUnlock()
-	}()
-	c.lk.RLock()
 	for _, mapTaskStatus := range c.MapTaskStatus {
 		if mapTaskStatus == TASK_STATUS_UNSTARTED {
 			return false
@@ -146,10 +143,6 @@ func (c *Coordinator) RecruitAllMapper() bool {
 }
 
 func (c *Coordinator) RecruitAllReduce() bool {
-	defer func() {
-		c.lk.RUnlock()
-	}()
-	c.lk.RLock()
 	for _, reduceTaskStatus := range c.ReduceTaskStatus {
 		if reduceTaskStatus == TASK_STATUS_UNSTARTED {
 			return false
@@ -159,10 +152,6 @@ func (c *Coordinator) RecruitAllReduce() bool {
 }
 
 func (c *Coordinator) FinishAllMapTask() bool {
-	defer func() {
-		c.lk.RUnlock()
-	}()
-	c.lk.RLock()
 	for _, mapTaskStatus := range c.MapTaskStatus {
 		if mapTaskStatus != TASK_STATUS_FINISHED {
 			return false
@@ -172,10 +161,6 @@ func (c *Coordinator) FinishAllMapTask() bool {
 }
 
 func (c *Coordinator) RecruitAllReducer() bool {
-	defer func() {
-		c.lk.RUnlock()
-	}()
-	c.lk.RLock()
 	for _, reduceTaskStatus := range c.ReduceTaskStatus {
 		if reduceTaskStatus == TASK_STATUS_UNSTARTED {
 			return false
