@@ -122,7 +122,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Printf("[Worker] call GetReduceKV rpc, resp: %v\n", getReduceKVResp)
 			data := make(map[string][]string)
 			for i := 0; i < mapLen; i++ {
-				fileName := fmt.Sprintf("../mr-%v-%v", i, reducerIndex)
+				fileName := fmt.Sprintf("mr-%v-%v", i, reducerIndex)
 				err := addValue(data, fileName)
 				if err != nil {
 					log.Println(err.Error())
