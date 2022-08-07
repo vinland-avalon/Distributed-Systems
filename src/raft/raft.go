@@ -18,14 +18,15 @@ package raft
 //
 
 import (
+	"math/rand"
 	//	"bytes"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	//	"6.824/labgob"
 	"6.824/labrpc"
 )
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -63,7 +64,22 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	// wbh: persistent massages, which needed to be stored in files later
+	currentTerm int
+	votedFor    *labrpc.ClientEnd
+	log         []ApplyMsg
+	termOfLog   []int
 
+	// wbh: all server's state
+	commitIndex int
+	lastApplied int
+
+	// wbh: leader's unique state
+	nextIndex  []int
+	matchIndex []int
+
+	status  int
+	applyCh chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -92,7 +108,6 @@ func (rf *Raft) persist() {
 	// rf.persister.SaveRaftState(data)
 }
 
-
 //
 // restore previously persisted state.
 //
@@ -115,7 +130,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
@@ -135,65 +149,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 
 }
-
-
-//
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-//
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-}
-
-//
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-//
-type RequestVoteReply struct {
-	// Your data here (2A).
-}
-
-//
-// example RequestVote RPC handler.
-//
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-}
-
-//
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-//
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
-
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -215,7 +170,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -250,6 +204,67 @@ func (rf *Raft) ticker() {
 		// be started and to randomize sleeping time using
 		// time.Sleep().
 
+		time.Sleep(time.Duration(rand.Intn(TIMEOUT_UPPER_BOUND-TIMEOUT_LOWER_BOUND)+TIMEOUT_LOWER_BOUND) * time.Millisecond)
+		if rf.recieveHeartBeats == false && rf.status == FOLLOWER {
+			// issue an election
+			rf.convertToCandidate()
+			rf.IssueElection(rf.currentTerm)
+		}
+		rf.recieveHeartBeats = false
+	}
+}
+
+func (rf *Raft) IssueElection(electionTerm int) {
+	rf.IncrementCurrentTerm()
+	rf.votedFor = rf.peers[rf.me]
+	rf.resetElectionTimer()
+	res := rf.SendAndWaitForRequestVotes(electionTerm)
+	if electionTerm == rf.currentTerm && rf.status == CANDIDATE {
+		if res == WIN_ELECTION {
+			rf.status = LEADER
+		}
+	}
+}
+
+func (rf *Raft) SendAndWaitForRequestVotes(term int) int {
+	mu := sync.Mutex{}
+	cond := sync.NewCond(&mu)
+	count := 1
+	finished := 1
+	for i, _ := range rf.peers {
+		if i == rf.me {
+			continue
+		}
+		go func(index int) {
+			args := &RequestVoteArgs{
+				term:         term,
+				candidateId:  rf.me,
+				lastLogIndex: len(rf.log) - 1,
+				lastLogTerm:  rf.termOfLog[len(rf.log)-1],
+			}
+			reply := &RequestVoteReply{}
+			ok := rf.sendRequestVote(index, args, reply)
+			if ok != true {
+				DPrintf("[SendAndWaitForRequestVotes] sendRequestVote fails")
+			} else {
+				mu.Lock()
+				defer mu.Unlock()
+				if reply.voteGranted == true {
+					count++
+				}
+				finished++
+				cond.Broadcast()
+			}
+		}(i)
+	}
+	mu.Lock()
+	for count <= len(rf.peers) && finished != len(rf.peers) {
+		cond.Wait()
+	}
+	if count > len(rf.peers) {
+		return WIN_ELECTION
+	} else {
+		return LOSE_ELECTION
 	}
 }
 
@@ -272,6 +287,25 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.mu = sync.Mutex{}
+
+	rf.log = make([]ApplyMsg, 0)
+	rf.termOfLog = make([]int, 0)
+	rf.votedFor = nil
+	rf.commitIndex = -1
+	rf.lastApplied = -1
+	rf.dead = 0
+	rf.currentTerm = -1
+	rf.matchIndex = make([]int, len(peers))
+	rf.nextIndex = make([]int, len(peers))
+	for i, _ := range rf.matchIndex {
+		rf.matchIndex[i] = -1
+		rf.nextIndex[i] = 0
+	}
+	rf.peers = peers
+
+	rf.applyCh = applyCh
+	rf.status = FOLLOWER
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -279,6 +313,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
-
 	return rf
+}
+
+// Reset Status,VoteFor, currentTerm
+func (rf *Raft) UpdateCurrentTerm(term int) {
+	rf.currentTerm = term
+	rf.status = FOLLOWER
+	rf.votedFor = nil
 }
