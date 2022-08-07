@@ -27,7 +27,9 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	DPrintf("[%v] RequestVote, args:%+v, reply:%+v", rf.me, args, reply)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	DPrintf("[%v] receives RequestVote from %v, args:%+v, reply:%+v", rf.me, args.candidateId, args, reply)
 	if rf.currentTerm < args.term {
 		rf.currentTerm = args.term
 		rf.UpdateCurrentTerm(args.term)
@@ -38,10 +40,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	} else if args.lastLogIndex >= len(rf.log)-1 && (rf.votedFor == nil || rf.votedFor == rf.peers[args.candidateId]) {
 		reply.voteGranted = true
 		rf.currentTerm = args.term
-
-		rf.recieveHeartBeat = true
+		rf.votedFor = rf.peers[args.candidateId]
 	}
-
 }
 
 //
@@ -94,6 +94,8 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here (2A, 2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	DPrintf("[%v] AppendEntries, args:%+v, reply:%+v", rf.me, args, reply)
 	reply.term = rf.currentTerm
 	if rf.currentTerm < args.term {
@@ -121,11 +123,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.CheckAndTryApply()
 	}
 
-	rf.recieveHeartBeats = true
+	rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
 
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	rf.mu.Lock()
+	if args.term > rf.currentTerm {
+		rf.status = FOLLOWER
+		rf.currentTerm = args.term
+	}
+	// other operations such as fix up
+	rf.mu.Unlock()
 	return ok
 }
+
+// tmp functions needed to check again

@@ -1,6 +1,10 @@
 package raft
 
-import "log"
+import (
+	"log"
+	"math/rand"
+	"time"
+)
 
 // Debugging
 const Debug = false
@@ -18,4 +22,28 @@ func Min(a, b int) int {
 	} else {
 		return b
 	}
+}
+
+func RandomTimeBetween(lower, higher int) time.Duration {
+	return time.Duration(rand.Intn(higher-lower)) * time.Millisecond
+}
+
+func (rf *Raft) containsPrevInfo(term int, index int) bool {
+	return true
+}
+
+func (rf *Raft) conflictWithPrevInfo(term int, index int) bool {
+	return false
+}
+
+func (rf *Raft) AppendEntriesFromPrevPos(index int) {
+
+}
+
+func (rf *Raft) CheckAndTryApply() {
+
+}
+
+func (rf *Raft) deleteWithPrevInfo(term int, index int) {
+
 }

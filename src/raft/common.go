@@ -4,6 +4,7 @@ const (
 	// timeOut time range: ms
 	TIMEOUT_UPPER_BOUND = 750
 	TIMEOUT_LOWER_BOUND = 500
+	HEARTBEAT_INTERVAL  = 100
 
 	// status
 	LEADER    = 1
