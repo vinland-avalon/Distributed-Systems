@@ -211,14 +211,14 @@ func (rf *Raft) ticker() {
 			rf.mu.Lock()
 			if rf.status == LEADER {
 				// send empty appendEntries RPC
-				DPrintf("[%v], as status of %v, going to broadcast heartbeat")
+				DPrintf("[%v], as status of %v, going to broadcast heartbeat", rf.me, rf.status)
 				rf.BroadcastHeartbeat()
 				rf.heartbeatTimer.Reset(HEARTBEAT_INTERVAL * time.Millisecond)
 			}
 			rf.mu.Unlock()
 		case <-rf.timeoutTimer.C:
 			rf.mu.Lock()
-			DPrintf("[%v], as status of %v, going to issue an election")
+			DPrintf("[%v], as status of %v, going to issue an election", rf.me, rf.status)
 			rf.ChangeStatus(CANDIDATE)
 			rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
 			rf.IssueElection(rf.currentTerm)
@@ -241,7 +241,7 @@ func (rf *Raft) IssueElection(electionTerm int) {
 		lastLogIndex: len(rf.log) - 1,
 		lastLogTerm:  rf.termOfLog[len(rf.log)-1],
 	}
-	DPrintf("[%v], in term %v, issues an election and broadcasts RequestVoteArgs: %+v", electionTerm, args)
+	DPrintf("[%v], in term %v, issues an election and broadcasts RequestVoteArgs: %+v", rf.me, electionTerm, args)
 	for i, _ := range rf.peers {
 		if i == rf.me {
 			continue
