@@ -363,6 +363,6 @@ func (rf *Raft) BroadcastHeartbeat() {
 }
 
 func (rf *Raft) ChangeStatus(status int) {
-	DPrintf("[%v] switch status from % to %v", rf.status, status)
+	DPrintf("[%v] switch status from %v to %v", rf.me, rf.status, status)
 	rf.status = status
 }
