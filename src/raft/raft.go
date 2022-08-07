@@ -205,17 +205,20 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
+		DPrintf("[%v] ticker start", rf.me)
 		select {
 		case <-rf.heartbeatTimer.C:
 			rf.mu.Lock()
 			if rf.status == LEADER {
 				// send empty appendEntries RPC
+				DPrintf("[%v], as status of %v, going to broadcast heartbeat")
 				rf.BroadcastHeartbeat()
 				rf.heartbeatTimer.Reset(HEARTBEAT_INTERVAL * time.Millisecond)
 			}
 			rf.mu.Unlock()
 		case <-rf.timeoutTimer.C:
 			rf.mu.Lock()
+			DPrintf("[%v], as status of %v, going to issue an election")
 			rf.ChangeStatus(CANDIDATE)
 			rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
 			rf.IssueElection(rf.currentTerm)
@@ -252,15 +255,15 @@ func (rf *Raft) IssueElection(electionTerm int) {
 				DPrintf("[%v] receives RequestVoteReply {%+v} from [%v] in term %v", rf.me, reply, index, electionTerm)
 				mu.Lock()
 				defer mu.Unlock()
-				if reply.term > rf.currentTerm {
-					DPrintf("[%v] finds a new leader [%v] with term %v", rf.me, index, reply.term)
-					rf.ChangeStatus(FOLLOWER)
-					rf.currentTerm = reply.term
-					rf.votedFor = nil
-					return
-				}
-				if reply.voteGranted == true {
-					count++
+				if args.term == rf.currentTerm && rf.status == CANDIDATE {
+					if reply.term > rf.currentTerm {
+						DPrintf("[%v]'s RequestVote in term %v finds a new leader [%v] with term %v, step into follower", rf.me, args.term, index, reply.term)
+						rf.UpdateCurrentTerm(reply.term)
+						return
+					}
+					if reply.voteGranted == true {
+						count++
+					}
 				}
 				finished++
 				cond.Broadcast()
@@ -321,6 +324,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.heartbeatTimer = time.NewTimer(HEARTBEAT_INTERVAL * time.Millisecond)
 	rf.timeoutTimer = time.NewTimer(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
 
+	DPrintf("[%v] me created, arguments: %+v", rf.me, rf)
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
@@ -358,5 +363,6 @@ func (rf *Raft) BroadcastHeartbeat() {
 }
 
 func (rf *Raft) ChangeStatus(status int) {
+	DPrintf("[%v] switch status from % to %v", rf.status, status)
 	rf.status = status
 }

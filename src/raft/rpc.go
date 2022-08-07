@@ -96,7 +96,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("[%v] AppendEntries, args:%+v, reply:%+v", rf.me, args, reply)
+	DPrintf("[%v] receives AppendEntries, args:%+v, reply:%+v", rf.me, args, reply)
 	reply.term = rf.currentTerm
 	if rf.currentTerm < args.term {
 		rf.currentTerm = args.term
@@ -124,15 +124,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
-
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	DPrintf("[%v] sendAppendEntries to [%v], args: %+v", rf.me, server, *args)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	rf.mu.Lock()
-	if args.term > rf.currentTerm {
-		rf.status = FOLLOWER
-		rf.currentTerm = args.term
+	if args.term == rf.currentTerm && rf.status == LEADER {
+		if reply.term > rf.currentTerm {
+			DPrintf("[%v] in term %v, find higher term of %v from [%v] than its current term %v, step down to follower", rf.me, args.term, reply.term, server, rf.currentTerm)
+			rf.UpdateCurrentTerm(reply.term)
+		}
 	}
 	// other operations such as fix up
 	rf.mu.Unlock()
