@@ -91,6 +91,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	term = rf.currentTerm
+	isleader = rf.status == LEADER
+
 	return term, isleader
 }
 
@@ -205,7 +208,6 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-		DPrintf("[%v] ticker start", rf.me)
 		select {
 		case <-rf.heartbeatTimer.C:
 			rf.mu.Lock()
@@ -213,35 +215,44 @@ func (rf *Raft) ticker() {
 				// send empty appendEntries RPC
 				DPrintf("[%v], as status of %v, going to broadcast heartbeat", rf.me, rf.status)
 				rf.BroadcastHeartbeat()
-				rf.heartbeatTimer.Reset(HEARTBEAT_INTERVAL * time.Millisecond)
 			}
+			rf.heartbeatTimer.Reset(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
 			rf.mu.Unlock()
 		case <-rf.timeoutTimer.C:
 			rf.mu.Lock()
-			DPrintf("[%v], as status of %v, going to issue an election", rf.me, rf.status)
-			rf.ChangeStatus(CANDIDATE)
-			rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
-			rf.IssueElection(rf.currentTerm)
-			rf.mu.Unlock()
+			if rf.status != LEADER {
+				DPrintf("[%v], as status of %v, going to issue an election", rf.me, rf.status)
+				rf.ChangeStatus(CANDIDATE)
+				rf.currentTerm++
+				// rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+				rf.IssueElection(rf.currentTerm)
+				rf.mu.Unlock()
+			} else {
+				rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+			}
 		}
 	}
 }
 
 func (rf *Raft) IssueElection(electionTerm int) {
-	rf.currentTerm++
+	// rf.currentTerm++
 	rf.votedFor = rf.peers[rf.me]
 
 	mu := sync.Mutex{}
 	cond := sync.NewCond(&mu)
 	count := 1
 	finished := 1
-	args := &RequestVoteArgs{
-		term:         electionTerm,
-		candidateId:  rf.me,
-		lastLogIndex: len(rf.log) - 1,
-		lastLogTerm:  rf.termOfLog[len(rf.log)-1],
+	lastLogTerm := 0
+	if len(rf.log) != 0 {
+		lastLogTerm = rf.termOfLog[len(rf.log)-1]
 	}
-	DPrintf("[%v], in term %v, issues an election and broadcasts RequestVoteArgs: %+v", rf.me, electionTerm, args)
+	args := &RequestVoteArgs{
+		Term:         electionTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: len(rf.log) - 1,
+		LastLogTerm:  lastLogTerm,
+	}
+	DPrintf("[%v], in term %v, issues an election and broadcasts RequestVoteArgs: %+v", rf.me, electionTerm, *args)
 	for i, _ := range rf.peers {
 		if i == rf.me {
 			continue
@@ -252,16 +263,18 @@ func (rf *Raft) IssueElection(electionTerm int) {
 			if ok != true {
 				DPrintf("[SendAndWaitForRequestVotes] sendRequestVote fails")
 			} else {
-				DPrintf("[%v] receives RequestVoteReply {%+v} from [%v] in term %v", rf.me, reply, index, electionTerm)
+				DPrintf("[%v] receives RequestVoteReply {%+v} from [%v] in term %v", rf.me, *reply, index, electionTerm)
 				mu.Lock()
 				defer mu.Unlock()
-				if args.term == rf.currentTerm && rf.status == CANDIDATE {
-					if reply.term > rf.currentTerm {
-						DPrintf("[%v]'s RequestVote in term %v finds a new leader [%v] with term %v, step into follower", rf.me, args.term, index, reply.term)
-						rf.UpdateCurrentTerm(reply.term)
+				DPrintf("$$$$$$$$$$$$$$$$$$$$$$$$$$\n%v,%v,%v", args.Term, rf.currentTerm, rf.status)
+				if args.Term == rf.currentTerm && rf.status == CANDIDATE {
+					if reply.Term > rf.currentTerm {
+						DPrintf("[%v]'s RequestVote in term %v finds a new leader [%v] with term %v, step into follower", rf.me, args.Term, index, reply.Term)
+						rf.UpdateCurrentTerm(reply.Term)
 						return
 					}
-					if reply.voteGranted == true {
+					if reply.VoteGranted == true {
+						//DPrintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\nenter here?")
 						count++
 					}
 				}
@@ -271,13 +284,15 @@ func (rf *Raft) IssueElection(electionTerm int) {
 		}(i)
 	}
 	mu.Lock()
-	for count <= len(rf.peers) && finished != len(rf.peers) {
+	for count <= len(rf.peers)/2 && finished != len(rf.peers) {
 		cond.Wait()
 	}
-	if count > len(rf.peers) && electionTerm == rf.currentTerm {
+	DPrintf("[%v] election result: count:%v, finished:%v, len(rf.peers)/2 :%v, electionTerm: %v, rf.currentTerm:%v", rf.me, count, finished, len(rf.peers)/2, electionTerm, rf.currentTerm)
+	if count > len(rf.peers)/2 && electionTerm == rf.currentTerm {
 		DPrintf("[%v] receives majority votes in term %v and becomes leader", rf.me, electionTerm)
 		rf.ChangeStatus(LEADER)
 		rf.BroadcastHeartbeat()
+		//DPrintf("((((((((((((((((((((((((((((((((((((")
 		rf.persist()
 	}
 }
@@ -309,7 +324,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = -1
 	rf.lastApplied = -1
 	rf.dead = 0
-	rf.currentTerm = -1
+	rf.currentTerm = 0
 	rf.matchIndex = make([]int, len(peers))
 	rf.nextIndex = make([]int, len(peers))
 	for i, _ := range rf.matchIndex {
@@ -321,7 +336,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 	rf.status = FOLLOWER
 
-	rf.heartbeatTimer = time.NewTimer(HEARTBEAT_INTERVAL * time.Millisecond)
+	rf.heartbeatTimer = time.NewTimer(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
 	rf.timeoutTimer = time.NewTimer(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
 
 	DPrintf("[%v] me created, arguments: %+v", rf.me, rf)
@@ -345,21 +360,28 @@ func (rf *Raft) UpdateCurrentTerm(term int) {
 func (rf *Raft) BroadcastHeartbeat() {
 	term := rf.currentTerm
 	prevLogIndex := len(rf.log) - 1
-	prevLogTerm := rf.termOfLog[prevLogIndex]
+	prevLogTerm := 0
+	if prevLogIndex != -1 {
+		prevLogTerm = rf.termOfLog[prevLogIndex]
+	}
 	leaderCommit := rf.commitIndex
 	for i, _ := range rf.peers {
+		if i == rf.me {
+			continue
+		}
 		go func(index int) {
 			args := AppendEntriesArgs{
-				term:         term,
-				leaderId:     rf.me,
-				prevLogIndex: prevLogIndex,
-				prevLogTerm:  prevLogTerm,
-				entries:      nil,
-				leaderCommit: leaderCommit,
+				Term:         term,
+				LeaderId:     rf.me,
+				PrevLogIndex: prevLogIndex,
+				PrevLogTerm:  prevLogTerm,
+				Entries:      nil,
+				LeaderCommit: leaderCommit,
 			}
 			rf.sendAppendEntries(index, &args, &AppendEntriesReply{})
 		}(i)
 	}
+	//DPrintf("|||||||||||||||||||||||||||||||")
 }
 
 func (rf *Raft) ChangeStatus(status int) {

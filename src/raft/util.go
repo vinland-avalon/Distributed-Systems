@@ -10,7 +10,7 @@ import (
 const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
+	if !Debug {
 		log.Printf(format, a...)
 	}
 	return
@@ -25,7 +25,7 @@ func Min(a, b int) int {
 }
 
 func RandomTimeBetween(lower, higher int) time.Duration {
-	return time.Duration(rand.Intn(higher-lower)) * time.Millisecond
+	return time.Duration(rand.Intn(higher-lower)+lower) * time.Millisecond
 }
 
 func (rf *Raft) containsPrevInfo(term int, index int) bool {

@@ -6,10 +6,10 @@ package raft
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	term         int
-	candidateId  int
-	lastLogIndex int
-	lastLogTerm  int
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -18,8 +18,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	term        int
-	voteGranted bool
+	Term        int
+	VoteGranted bool
 }
 
 //
@@ -29,18 +29,19 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("[%v] receives RequestVote from %v, args:%+v, reply:%+v", rf.me, args.candidateId, args, reply)
-	if rf.currentTerm < args.term {
-		rf.currentTerm = args.term
-		rf.UpdateCurrentTerm(args.term)
+	DPrintf("[%v] receives RequestVote from %v, args:%+v, reply:%+v", rf.me, args.CandidateId, args, reply)
+	if rf.currentTerm < args.Term {
+		// rf.currentTerm = args.Term
+		rf.UpdateCurrentTerm(args.Term)
 	}
 
-	if args.term < rf.currentTerm {
-		reply.voteGranted = false
-	} else if args.lastLogIndex >= len(rf.log)-1 && (rf.votedFor == nil || rf.votedFor == rf.peers[args.candidateId]) {
-		reply.voteGranted = true
-		rf.currentTerm = args.term
-		rf.votedFor = rf.peers[args.candidateId]
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+	} else if args.LastLogIndex >= len(rf.log)-1 && (rf.votedFor == nil || rf.votedFor == rf.peers[args.CandidateId]) {
+		reply.VoteGranted = true
+		rf.currentTerm = args.Term
+		reply.Term = rf.currentTerm
+		rf.votedFor = rf.peers[args.CandidateId]
 	}
 }
 
@@ -79,50 +80,54 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 type AppendEntriesArgs struct {
-	term         int
-	leaderId     int
-	prevLogIndex int
-	prevLogTerm  int
-	entries      []ApplyMsg
-	leaderCommit int
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []ApplyMsg
+	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
-	term    int
-	success bool
+	Term    int
+	Success bool
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("[%v] receives AppendEntries, args:%+v, reply:%+v", rf.me, args, reply)
-	reply.term = rf.currentTerm
-	if rf.currentTerm < args.term {
-		rf.currentTerm = args.term
-		rf.UpdateCurrentTerm(args.term)
+	DPrintf("[%v] receives AppendEntriesArgs, args:%+v, reply:%+v", rf.me, args, reply)
+	reply.Term = rf.currentTerm
+	if rf.currentTerm < args.Term {
+		rf.currentTerm = args.Term
+		rf.UpdateCurrentTerm(args.Term)
 	}
 
-	if rf.currentTerm > args.term {
-		reply.success = false
+	if rf.currentTerm > args.Term {
+		//DPrintf("################################")
+		reply.Success = false
 		return
 	} else {
-		if !rf.containsPrevInfo(args.prevLogTerm, args.prevLogIndex) {
-			reply.success = false
+		if !rf.containsPrevInfo(args.PrevLogTerm, args.PrevLogIndex) {
+			reply.Success = false
 		} else {
-			if rf.conflictWithPrevInfo(args.prevLogTerm, args.prevLogIndex) {
-				rf.deleteWithPrevInfo(args.prevLogTerm, args.prevLogIndex)
+			if rf.conflictWithPrevInfo(args.PrevLogTerm, args.PrevLogIndex) {
+				rf.deleteWithPrevInfo(args.PrevLogTerm, args.PrevLogIndex)
 			}
-			rf.AppendEntriesFromPrevPos(args.prevLogIndex)
-			reply.success = true
+			rf.AppendEntriesFromPrevPos(args.PrevLogIndex)
+			reply.Success = true
 		}
 	}
 
-	if args.leaderCommit > rf.commitIndex {
-		rf.commitIndex = Min(args.leaderCommit, args.prevLogIndex+len(args.entries))
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = Min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
 		rf.CheckAndTryApply()
 	}
-
+	//DPrintf("++++++++++++++++++++++++++++++")
+	if !rf.heartbeatTimer.Stop() && len(rf.heartbeatTimer.C) > 0 {
+		<-rf.heartbeatTimer.C
+	}
 	rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
 }
 
@@ -130,10 +135,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	DPrintf("[%v] sendAppendEntries to [%v], args: %+v", rf.me, server, *args)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	rf.mu.Lock()
-	if args.term == rf.currentTerm && rf.status == LEADER {
-		if reply.term > rf.currentTerm {
-			DPrintf("[%v] in term %v, find higher term of %v from [%v] than its current term %v, step down to follower", rf.me, args.term, reply.term, server, rf.currentTerm)
-			rf.UpdateCurrentTerm(reply.term)
+	DPrintf("[%v] get AppendEntriesReply from [%v], args: %+v, reply: %+v", rf.me, server, args, reply)
+	if args.Term == rf.currentTerm && rf.status == LEADER {
+		if reply.Term > rf.currentTerm {
+			DPrintf("[%v] in term %v, find higher term of %v from [%v] than its current term %v, step down to follower", rf.me, args.Term, reply.Term, server, rf.currentTerm)
+			rf.UpdateCurrentTerm(reply.Term)
 		}
 	}
 	// other operations such as fix up
