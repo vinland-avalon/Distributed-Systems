@@ -214,10 +214,12 @@ func (rf *Raft) ticker() {
 			if rf.status == LEADER {
 				// send empty appendEntries RPC
 				DPrintf("[%v], as status of %v, going to broadcast heartbeat", rf.me, rf.status)
+				rf.mu.Unlock()
 				rf.BroadcastHeartbeat()
+			} else {
+				rf.mu.Unlock()
 			}
 			rf.heartbeatTimer.Reset(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
-			rf.mu.Unlock()
 		case <-rf.timeoutTimer.C:
 			rf.mu.Lock()
 			if rf.status != LEADER {
@@ -226,10 +228,10 @@ func (rf *Raft) ticker() {
 				rf.currentTerm++
 				// rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
 				rf.IssueElection(rf.currentTerm)
-				rf.mu.Unlock()
-			} else {
-				rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+				// rf.heartbeatTimer.Reset(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
 			}
+			rf.mu.Unlock()
+			rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
 		}
 	}
 }
@@ -260,27 +262,25 @@ func (rf *Raft) IssueElection(electionTerm int) {
 		go func(index int) {
 			reply := &RequestVoteReply{}
 			ok := rf.sendRequestVote(index, args, reply)
+			mu.Lock()
+			defer mu.Unlock()
 			if ok != true {
-				DPrintf("[SendAndWaitForRequestVotes] sendRequestVote fails")
+				DPrintf("[%v] send RequestVotes to [%v] fails, args: %+v", rf.me, index, args)
 			} else {
 				DPrintf("[%v] receives RequestVoteReply {%+v} from [%v] in term %v", rf.me, *reply, index, electionTerm)
-				mu.Lock()
-				defer mu.Unlock()
-				DPrintf("$$$$$$$$$$$$$$$$$$$$$$$$$$\n%v,%v,%v", args.Term, rf.currentTerm, rf.status)
+				// DPrintf("$$$$$$$$$$$$$$$$$$$$$$$$$$\n%v,%v,%v", args.Term, rf.currentTerm, rf.status)
 				if args.Term == rf.currentTerm && rf.status == CANDIDATE {
 					if reply.Term > rf.currentTerm {
 						DPrintf("[%v]'s RequestVote in term %v finds a new leader [%v] with term %v, step into follower", rf.me, args.Term, index, reply.Term)
 						rf.UpdateCurrentTerm(reply.Term)
-						return
-					}
-					if reply.VoteGranted == true {
+					} else if reply.VoteGranted == true {
 						//DPrintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\nenter here?")
 						count++
 					}
 				}
-				finished++
-				cond.Broadcast()
 			}
+			finished++
+			cond.Broadcast()
 		}(i)
 	}
 	mu.Lock()
@@ -295,6 +295,7 @@ func (rf *Raft) IssueElection(electionTerm int) {
 		//DPrintf("((((((((((((((((((((((((((((((((((((")
 		rf.persist()
 	}
+	mu.Unlock()
 }
 
 //
@@ -352,6 +353,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 // Reset Status,VoteFor, currentTerm
 func (rf *Raft) UpdateCurrentTerm(term int) {
+	DPrintf("[%v] updateTerm from %v to %v, and update its status from %v to %v", rf.me, rf.currentTerm, term, rf.status, FOLLOWER)
 	rf.currentTerm = term
 	rf.status = FOLLOWER
 	rf.votedFor = nil

@@ -34,13 +34,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// rf.currentTerm = args.Term
 		rf.UpdateCurrentTerm(args.Term)
 	}
-
+	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.VoteGranted = false
 	} else if args.LastLogIndex >= len(rf.log)-1 && (rf.votedFor == nil || rf.votedFor == rf.peers[args.CandidateId]) {
 		reply.VoteGranted = true
-		rf.currentTerm = args.Term
-		reply.Term = rf.currentTerm
 		rf.votedFor = rf.peers[args.CandidateId]
 	}
 }
@@ -96,7 +94,10 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	defer func() {
+		rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+		rf.mu.Unlock()
+	}()
 	DPrintf("[%v] receives AppendEntriesArgs, args:%+v, reply:%+v", rf.me, args, reply)
 	reply.Term = rf.currentTerm
 	if rf.currentTerm < args.Term {
@@ -105,10 +106,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	if rf.currentTerm > args.Term {
-		//DPrintf("################################")
+		DPrintf("[%v] receives AppendEntries from [%v], but refused", rf.me, args.LeaderId)
 		reply.Success = false
+		// reply.Term = rf.currentTerm
 		return
 	} else {
+		rf.status = FOLLOWER
 		if !rf.containsPrevInfo(args.PrevLogTerm, args.PrevLogIndex) {
 			reply.Success = false
 		} else {
@@ -125,17 +128,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.CheckAndTryApply()
 	}
 	//DPrintf("++++++++++++++++++++++++++++++")
-	if !rf.heartbeatTimer.Stop() && len(rf.heartbeatTimer.C) > 0 {
-		<-rf.heartbeatTimer.C
-	}
+	//if !rf.time.Stop() && len(rf.heartbeatTimer.C) > 0 {
+	//	<-rf.heartbeatTimer.C
+	//}
 	rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	DPrintf("[%v] sendAppendEntries to [%v], args: %+v", rf.me, server, *args)
+	id := GenerateId()
+	DPrintf("[%v] send AppendEntries (%v) to [%v], args: %+v", rf.me, id, server, *args)
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	rf.mu.Lock()
-	DPrintf("[%v] get AppendEntriesReply from [%v], args: %+v, reply: %+v", rf.me, server, args, reply)
+	if ok != true {
+		DPrintf("[%v] send AppendEntries (%v) to [%v] fails, args: %+v", rf.me, id, server, args)
+	}
+	DPrintf("[%v] get AppendEntriesReply (%v) from [%v], args: %+v, reply: %+v", rf.me, id, server, args, reply)
 	if args.Term == rf.currentTerm && rf.status == LEADER {
 		if reply.Term > rf.currentTerm {
 			DPrintf("[%v] in term %v, find higher term of %v from [%v] than its current term %v, step down to follower", rf.me, args.Term, reply.Term, server, rf.currentTerm)

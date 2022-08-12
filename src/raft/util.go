@@ -16,6 +16,13 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+func PPrintf(format string, a ...interface{}) (n int, err error) {
+	if !Debug {
+		log.Printf(format, a...)
+	}
+	return
+}
+
 func Min(a, b int) int {
 	if a > b {
 		return a
@@ -46,4 +53,10 @@ func (rf *Raft) CheckAndTryApply() {
 
 func (rf *Raft) deleteWithPrevInfo(term int, index int) {
 
+}
+
+func GenerateId() int {
+	// rand.Seed(time.Now().Unix())
+
+	return rand.Int()
 }
