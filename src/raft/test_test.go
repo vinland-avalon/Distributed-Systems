@@ -120,14 +120,17 @@ func TestManyElections2A(t *testing.T) {
 		cfg.disconnect(i1)
 		cfg.disconnect(i2)
 		cfg.disconnect(i3)
+		PPrintf("[%v] iterator, disconnect [%v, %v, %v], ", ii, i1, i2, i3)
 
 		// either the current leader should still be alive,
 		// or the remaining four should elect a new one.
-		cfg.checkOneLeader()
+		tmpLeader := cfg.checkOneLeader()
+		PPrintf("[%v] iterator, leader is [%v] ", ii, tmpLeader)
 
 		cfg.connect(i1)
 		cfg.connect(i2)
 		cfg.connect(i3)
+		PPrintf("[%v] iterator, connect [%v, %v, %v], ", ii, i1, i2, i3)
 	}
 
 	cfg.checkOneLeader()

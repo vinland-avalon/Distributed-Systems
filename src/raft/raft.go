@@ -254,20 +254,21 @@ func (rf *Raft) IssueElection(electionTerm int) {
 		LastLogIndex: len(rf.log) - 1,
 		LastLogTerm:  lastLogTerm,
 	}
-	DPrintf("[%v], in term %v, issues an election and broadcasts RequestVoteArgs: %+v", rf.me, electionTerm, *args)
+	id := GenerateId()
+	DPrintf("[%v], in term %v, issues an election and broadcasts RequestVoteArgs(%v): %+v", rf.me, electionTerm, id, *args)
 	for i, _ := range rf.peers {
 		if i == rf.me {
 			continue
 		}
-		go func(index int) {
+		go func(index, id int) {
 			reply := &RequestVoteReply{}
 			ok := rf.sendRequestVote(index, args, reply)
 			mu.Lock()
 			defer mu.Unlock()
 			if ok != true {
-				DPrintf("[%v] send RequestVotes to [%v] fails, args: %+v", rf.me, index, args)
+				DPrintf("[%v] send RequestVotes(%v) to [%v] fails, args: %+v", rf.me, id, index, args)
 			} else {
-				DPrintf("[%v] receives RequestVoteReply {%+v} from [%v] in term %v", rf.me, *reply, index, electionTerm)
+				DPrintf("[%v] receives RequestVoteReply(%v) {%+v} from [%v] in term %v", rf.me, id, *reply, index, electionTerm)
 				// DPrintf("$$$$$$$$$$$$$$$$$$$$$$$$$$\n%v,%v,%v", args.Term, rf.currentTerm, rf.status)
 				if args.Term == rf.currentTerm && rf.status == CANDIDATE {
 					if reply.Term > rf.currentTerm {
@@ -277,11 +278,16 @@ func (rf *Raft) IssueElection(electionTerm int) {
 						//DPrintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\nenter here?")
 						count++
 					}
+				} else {
+					// rf.ChangeStatus(FOLLOWER)
+					finished = len(rf.peers)
+					cond.Broadcast()
+					return
 				}
 			}
 			finished++
 			cond.Broadcast()
-		}(i)
+		}(i, id)
 	}
 	mu.Lock()
 	for count <= len(rf.peers)/2 && finished != len(rf.peers) {

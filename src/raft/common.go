@@ -2,9 +2,9 @@ package raft
 
 const (
 	// timeOut time range: ms
-	TIMEOUT_UPPER_BOUND = 300
+	TIMEOUT_UPPER_BOUND = 250
 	TIMEOUT_LOWER_BOUND = 150
-	HEARTBEAT_INTERVAL  = 50
+	HEARTBEAT_INTERVAL  = 100
 
 	// status
 	LEADER    = 1
