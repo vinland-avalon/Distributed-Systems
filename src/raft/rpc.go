@@ -82,56 +82,179 @@ type AppendEntriesArgs struct {
 	LeaderId     int
 	PrevLogIndex int
 	PrevLogTerm  int
-	Entries      []ApplyMsg
+	Entries      []Entry
 	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term               int
+	Success            bool
+	ConflictTerm       int
+	ConflictFirstIndex int
 }
 
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// Your code here (2A, 2B).
-	rf.mu.Lock()
-	defer func() {
-		rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
-		rf.mu.Unlock()
-	}()
-	DPrintf("[%v] receives AppendEntriesArgs, args:%+v, reply:%+v", rf.me, args, reply)
-	reply.Term = rf.currentTerm
-	if rf.currentTerm < args.Term {
-		rf.currentTerm = args.Term
-		rf.UpdateCurrentTerm(args.Term)
-	}
+//func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+//	// Your code here (2A, 2B).
+//	rf.mu.Lock()
+//
+//	defer rf.persist()
+//	defer rf.mu.Unlock()
+//
+//	DPrintf("[%v] as state of %v, before receiving AppendEntry with args {%+v}, its status is currentTerm %v,commitIndex %v,lastApplied %v,firstLog %v,lastLog %v", rf.me, rf.status, args, rf.currentTerm, rf.commitIndex, rf.lastApplied, rf.GetFirstLog(), rf.GetLastLog())
+//	reply.Term = rf.currentTerm
+//	if rf.currentTerm > args.Term {
+//		DPrintf("[%v] receives AppendEntries from [%v], but refused", rf.me, args.LeaderId)
+//		reply.Success = false
+//		// reply.Term = rf.currentTerm
+//		return
+//	}
+//
+//	if rf.currentTerm < args.Term {
+//		rf.UpdateCurrentTerm(args.Term)
+//	}
+//
+//	rf.ChangeStatus(FOLLOWER)
+//	rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+//
+//	if !rf.containsPrevInfo(args.PrevLogTerm, args.PrevLogIndex) {
+//		reply.Success = false
+//	} else {
+//		if rf.conflictWithPrevInfo(args.PrevLogTerm, args.PrevLogIndex) {
+//			rf.deleteWithPrevInfo(args.PrevLogTerm, args.PrevLogIndex)
+//		}
+//		rf.AppendEntriesFromPrevPos(args.PrevLogIndex)
+//		reply.Success = true
+//	}
+//
+//	if args.LeaderCommit > rf.commitIndex {
+//		rf.commitIndex = Min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
+//		rf.CheckAndTryApply()
+//	}
+//	//DPrintf("++++++++++++++++++++++++++++++")
+//	//if !rf.time.Stop() && len(rf.heartbeatTimer.C) > 0 {
+//	//	<-rf.heartbeatTimer.C
+//	//}
+//	rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+//}
 
-	if rf.currentTerm > args.Term {
-		DPrintf("[%v] receives AppendEntries from [%v], but refused", rf.me, args.LeaderId)
-		reply.Success = false
-		// reply.Term = rf.currentTerm
-		return
-	} else {
-		rf.status = FOLLOWER
-		if !rf.containsPrevInfo(args.PrevLogTerm, args.PrevLogIndex) {
-			reply.Success = false
-		} else {
-			if rf.conflictWithPrevInfo(args.PrevLogTerm, args.PrevLogIndex) {
-				rf.deleteWithPrevInfo(args.PrevLogTerm, args.PrevLogIndex)
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// Reply false if term < currentTerm, otherwise continue a "consistency check"
+	if rf.currentTerm <= args.Term {
+
+		// If RPC request or response contains term T > currentTerm:
+		// set currentTerm = T, convert to follower
+		if rf.currentTerm < args.Term {
+
+			DPrintf("[AppendEntries]: Id %d Term %d State %v\t||\targs's term %d is newer\n",
+				rf.me, rf.currentTerm, rf.status, args.Term)
+			rf.UpdateCurrentTerm(args.Term)
+		}
+
+		// if the consistency check pass
+		if len(rf.log) > args.PrevLogIndex &&
+			rf.log[args.PrevLogIndex].TermOfEntry == args.PrevLogTerm {
+
+			// 收到AppendEntries RPC(包括心跳)，说明存在leader，自己切换为follower状态
+			rf.ChangeStatus(FOLLOWER)
+
+			// **If** an existing entry conflicts with a new one(same index but
+			// different terms), delete the existing entry and all that follow it.
+			// 这里的If至关重要。如果follower拥有领导者的日志条目，则follower一定不能(MUST NOT)
+			// 截断其日志。leader发送的条目之后的任何内容(any elements of following the entries
+			// send by the leader)必须(MUST)保留。
+
+			// 1. 判断follower中log是否已经拥有args.Entries的所有条目，全部有则匹配！
+			isMatch := true
+			nextIndex := args.PrevLogIndex + 1
+			end := len(rf.log) - 1
+			for i := 0; isMatch && i < len(args.Entries); i++ {
+				// 如果args.Entries还有元素，而log已经达到结尾，则不匹配
+				if end < nextIndex+i {
+					isMatch = false
+				} else if rf.log[nextIndex+i].TermOfEntry != args.Entries[i].TermOfEntry {
+					isMatch = false
+				}
 			}
-			rf.AppendEntriesFromPrevPos(args.PrevLogIndex)
+
+			// 2. 如果存在冲突的条目，再进行日志复制
+			if isMatch == false {
+				// 2.1. 进行日志复制，并更新commitIndex
+				rf.log = append(rf.log[:nextIndex], args.Entries...) // [0, nextIndex) + entries
+			}
+
+			DPrintf("[AppendEntries]: Id %d Term %d State %v\t||\tcommitIndex %d while leaderCommit %d"+
+				" for leader %d\n", rf.me, rf.currentTerm, rf.status, rf.commitIndex,
+				args.LeaderCommit, args.LeaderId)
+
+			// if leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry)
+			if args.LeaderCommit > rf.commitIndex {
+				rf.commitIndex = args.LeaderCommit
+				if rf.commitIndex > len(rf.log)-1 {
+					rf.commitIndex = len(rf.log) - 1
+				}
+			}
+
+			index := nextIndex + len(args.Entries) - 1
+			DPrintf("[AppendEntries]: Id %d Term %d State %v\t||\tconsistency check pass for index %d"+
+				" with args's prevLogIndex %d args's prevLogTerm %d\n", rf.me, rf.currentTerm, rf.status,
+				index, args.PrevLogIndex, args.PrevLogTerm)
+
+			// Reset timeout when received leader's AppendEntries RPC
+			rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+
+			// 更新了commitIndex之后给applyCond条件变量发信号，以应用新提交的entries到状态机
+			rf.applyCond.Broadcast()
+
+			reply.Term = rf.currentTerm
 			reply.Success = true
+			return
+
+		} else {
+
+			nextIndex := args.PrevLogIndex + 1
+			index := nextIndex + len(args.Entries) - 1
+
+			DPrintf("[AppendEntries]: Id %d Term %d State %v\t||\tconsistency check failed for index %d"+
+				" with args's prevLogIndex %d args's prevLogTerm %d\n",
+				rf.me, rf.currentTerm, rf.status, index, args.PrevLogIndex, args.PrevLogTerm)
+
+			//如果peer的日志长度小于leader的nextIndex
+			if len(rf.log) < nextIndex {
+				lastIndex := len(rf.log) - 1
+				lastTerm := rf.log[lastIndex].TermOfEntry
+				reply.ConflictTerm = lastTerm
+				reply.ConflictFirstIndex = lastIndex
+
+				DPrintf("[AppendEntries]: Id %d Term %d State %v\t||\tlog's len %d"+
+					" is shorter than args's prevLogIndex %d\n",
+					rf.me, rf.currentTerm, rf.status, len(rf.log), args.PrevLogIndex)
+			} else {
+				reply.ConflictTerm = rf.log[args.PrevLogIndex].TermOfEntry
+				reply.ConflictFirstIndex = args.PrevLogIndex
+				DPrintf("[AppendEntries]: Id %d Term %d State %v\t||\tconsistency check failed"+
+					" with args's prevLogIndex %d args's prevLogTerm %d while it's prevLogTerm %d in"+
+					" prevLogIndex %d\n", rf.me, rf.currentTerm, rf.status,
+					args.PrevLogIndex, args.PrevLogTerm, rf.log[args.PrevLogIndex].TermOfEntry, args.PrevLogIndex)
+			}
+			// 递减reply.ConflictFirstIndex直到index为log中第一个term为reply.ConflictTerm的entry
+			for i := reply.ConflictFirstIndex - 1; i >= 0; i-- {
+				if rf.log[i].TermOfEntry != reply.ConflictTerm {
+					break
+				} else {
+					reply.ConflictFirstIndex -= 1
+				}
+			}
+			DPrintf("[AppendEntries]: Id %d Term %d State %v\t||\treply's conflictFirstIndex %d"+
+				" and conflictTerm %d\n", rf.me, rf.currentTerm, rf.status,
+				reply.ConflictFirstIndex, reply.ConflictTerm)
 		}
 	}
 
-	if args.LeaderCommit > rf.commitIndex {
-		rf.commitIndex = Min(args.LeaderCommit, args.PrevLogIndex+len(args.Entries))
-		rf.CheckAndTryApply()
-	}
-	//DPrintf("++++++++++++++++++++++++++++++")
-	//if !rf.time.Stop() && len(rf.heartbeatTimer.C) > 0 {
-	//	<-rf.heartbeatTimer.C
-	//}
-	rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+	reply.Term = rf.currentTerm
+	reply.Success = false
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
