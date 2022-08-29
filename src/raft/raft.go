@@ -590,6 +590,166 @@ func (rf *Raft) BroadcastHeartbeat() {
 	//DPrintf("|||||||||||||||||||||||||||||||")
 }
 
+// leader给其他peers广播一次心跳。因为发送心跳也要进行一致性检查，
+// 为了不因为初始时的日志不一致而使得心跳发送失败，而其他peers因为
+// 接收不到心跳而心跳超时，进而发起不需要的(no-needed)选举，所以
+// 发送心跳也需要在一致性检查失败时进行重试。
+//func (rf *Raft) BroadcastHeartbeat() {
+//
+//	// 非leader不能发送心跳
+//	if _, isLeader := rf.GetState(); isLeader == false {
+//		return
+//	}
+//
+//	rf.mu.Lock()
+//	// 发送心跳时更新下发送时间
+//	// rf.latestIssueTime = time.Now().UnixNano()
+//	rf.mu.Unlock()
+//
+//	go func() {
+//		var wg sync.WaitGroup
+//		keep := true
+//
+//		for i, _ := range rf.peers {
+//
+//			// 读keep需要加锁
+//			rf.mu.Lock()
+//			if keep == false {
+//				break
+//			}
+//			rf.mu.Unlock()
+//
+//			if i == rf.me {
+//				continue
+//			}
+//			wg.Add(1)
+//
+//			go func(i int, rf *Raft, keep *bool) {
+//				defer wg.Done()
+//
+//				// 在AppendEntries RPC一致性检查失败后，递减nextIndex，重试
+//			retry:
+//
+//				// 因为涉及到retry操作，避免过时的leader的retry操作继续下去
+//				if _, isLeader := rf.GetState(); isLeader == false {
+//					return
+//				}
+//
+//				rf.mu.Lock()
+//				// 封装AppendEntriesArgs参数
+//				prevLogIndex := rf.nextIndex[i] - 1
+//				if prevLogIndex < 0 {
+//					DPrintf("[Broadcast]: Id %d Term %d State %v\t||\tinvalid prevLogIndex %d for peer %d\n",
+//						rf.me, rf.currentTerm, rf.status, prevLogIndex, i)
+//				}
+//				prevLogTerm := rf.log[prevLogIndex].TermOfEntry
+//				// 概念上将心跳不携带entries，这指的是当nextIndex为log的尾后位置时的一般情况。
+//				// 但是如果nextIndex小于log的尾后位置，这是心跳必须携带entries，因为这次心跳可能就会
+//				// 通过一致性检查，并可能提升commitIndex，这时会给applyCond条件变量发信号以提交
+//				// [lastApplied+1, commitIndex]之间的entries。如果此次心跳没有携带entries，则不会有
+//				// 日志追加，所以提交的可能是和leader不一致的过时的entries，这就出现了严重错误。所以
+//				// 这种情况下心跳要携带entries。
+//				entries := rf.log[prevLogIndex+1:]
+//				args := AppendEntriesArgs{Term: rf.currentTerm, LeaderId: rf.me,
+//					PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm,
+//					Entries: entries, LeaderCommit: rf.commitIndex}
+//				DPrintf("[Broadcast]: Id %d Term %d State %v\t||\tissue heartbeat to peer %d"+
+//					" with nextIndex %d\n", rf.me, rf.currentTerm, rf.status, i, prevLogIndex+1)
+//				rf.mu.Unlock()
+//				var reply AppendEntriesReply
+//
+//				ok := rf.sendAppendEntries(i, &args, &reply)
+//
+//				// 心跳发送失败，表明无法和peer建立通信，直接退出
+//				if ok == false {
+//					rf.mu.Lock()
+//					DPrintf("[Broadcast]: Id %d Term %d State %v\t||\tissue heartbeat to peer %d failed\n",
+//						rf.me, rf.currentTerm, rf.status, i)
+//					rf.mu.Unlock()
+//					return
+//				}
+//
+//				// heartbeat被拒绝，原因可能是leader任期过时，或者一致性检查没有通过。
+//				// 发送心跳也可能出现一致性检查不通过，因为一致性检查是查看leader的nextIndex之前的
+//				// entry和指定peer的log中那个索引的日志是否匹配。即使心跳中不携带任何日志，但一致性
+//				// 检查仍会因为nextIndex而失败，这时需要递减nextIndex然后重试。
+//				if reply.Success == false {
+//
+//					rf.mu.Lock()
+//					DPrintf("[Broadcast]: Id %d Term %d State %v\t||\theartbeat is rejected by peer %d\n",
+//						rf.me, rf.currentTerm, rf.status, i)
+//
+//					// leader任期过时，需要切换到follower
+//					if rf.currentTerm < reply.Term {
+//						// If RPC request or response contains term T > currentTerm, set currentTerm = T,
+//						// convert to follower
+//						rf.UpdateCurrentTerm(reply.Term)
+//						rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+//						*keep = false
+//						DPrintf("[Broadcast]: Id %d Term %d State %v\t||\theartbeat is rejected by peer %d"+
+//							" due to newer peer's term %d\n", rf.me, rf.currentTerm, rf.status, i, reply.Term)
+//						rf.mu.Unlock()
+//						return
+//					} else { // 如果是一致性检查未通过，则递减nextIndex，重试
+//
+//						conflictFirstIndex := reply.ConflictFirstIndex
+//						conflictTerm := rf.log[conflictFirstIndex].TermOfEntry
+//						// 判断conflictFirstIndex处的entry是否和reply的peer一致，即term相等
+//						if conflictTerm == reply.ConflictTerm {
+//							// 相等，则nextIndex直接设置为conflictFirstIndex + 1
+//							rf.nextIndex[i] = conflictFirstIndex + 1
+//						} else {
+//							// 若不等，则递减conflictFirstIndex，直到entry为leader的log中第一个出现conflictTerm的index
+//							for k := conflictFirstIndex - 1; k >= 0; k-- {
+//								if rf.log[k].TermOfEntry != conflictTerm {
+//									break
+//								} else {
+//									conflictFirstIndex -= 1
+//								}
+//							}
+//							rf.nextIndex[i] = conflictFirstIndex + 1
+//						}
+//						// 为避免活锁，这里需要判断下prevLogIndex(rf.nextIndex[i]-1)的任期是否等于reply.ConflictTerm。
+//						// 如果不等，则说明rf.nextIndex[i]没有前进，遇到“活锁”，这时简单的将其减1即可。
+//						nextIndex := rf.nextIndex[i]
+//						if nextIndex-1 == reply.ConflictFirstIndex &&
+//							rf.log[nextIndex-1].TermOfEntry != reply.ConflictTerm {
+//							rf.nextIndex[i] -= 1
+//						}
+//
+//						DPrintf("[Broadcast]: Id %d Term %d State %v\t||\theartbeat is rejected by peer %d"+
+//							" due to the consistency check failed\n", rf.me, rf.currentTerm, rf.status, i)
+//						DPrintf("[Broadcast]: Id %d Term %d State %v\t||\tretry heartbeat with"+
+//							" conflictFirstIndex %d and conflictTerm %d nextIndex %d\n", rf.me, rf.currentTerm,
+//							rf.status, conflictFirstIndex, conflictTerm, rf.nextIndex[i])
+//						rf.mu.Unlock()
+//						goto retry
+//					}
+//
+//				} else {
+//					// 心跳发送成功
+//					rf.mu.Lock()
+//					// 更新下该peer对应的nextIndex和matchIndex
+//					if rf.nextIndex[i] < len(rf.log) {
+//						rf.nextIndex[i] = len(rf.log)
+//						rf.matchIndex[i] = rf.nextIndex[i] - 1
+//					}
+//					//rf.matchIndex[i] = rf.nextIndex[i] - 1
+//					DPrintf("[Broadcast]: Id %d Term %d State %v\t||\tsend heartbeat to peer %d success\n",
+//						rf.me, rf.currentTerm, rf.status, i)
+//					rf.mu.Unlock()
+//				}
+//
+//			}(i, rf, &keep)
+//
+//		}
+//
+//		//等待所有发送goroutine结束
+//		wg.Wait()
+//
+//	}()
+//}
+
 func (rf *Raft) ChangeStatus(status int) {
 	DPrintf("[%v] switch status from %v to %v", rf.me, rf.status, status)
 	rf.status = status
