@@ -7,10 +7,10 @@ package raft
 //
 // rf = Make(...)
 //   create a new Raft server.
-// rf.Start(command interface{}) (index, term, isleader)
+// rf.Start(command interface{}) (index, Term, isleader)
 //   start agreement on a new log entry
-// rf.GetState() (term, isLeader)
-//   ask a Raft for its current term, and whether it thinks it is leader
+// rf.GetState() (Term, isLeader)
+//   ask a Raft for its current Term, and whether it thinks it is leader
 // ApplyMsg
 //   each time a new entry is committed to the log, each Raft peer
 //   should send an ApplyMsg to the service (or tester)
@@ -23,9 +23,37 @@ import (
 	"sync/atomic"
 	"time"
 
-	//	"6.824/labgob"
 	"6.824/labrpc"
 )
+
+//
+// as each Raft peer becomes aware that successive log entries are
+// committed, the peer should send an ApplyMsg to the service (or
+// tester) on the same server, via the applyCh passed to Make(). set
+// CommandValid to true to indicate that the ApplyMsg contains a newly
+// committed log entry.
+//
+// in part 2D you'll want to send other kinds of messages (e.g.,
+// snapshots) on the applyCh, but set CommandValid to false for these
+// other uses.
+//
+type ApplyMsg struct {
+	CommandValid bool
+	Command      interface{}
+	CommandIndex int
+
+	// For 2D:
+	SnapshotValid bool
+	Snapshot      []byte
+	SnapshotTerm  int
+	SnapshotIndex int
+}
+
+type Entry struct {
+	Command interface{}
+	Term    int
+	Index   int
+}
 
 //
 // A Go object implementing a single Raft peer.
@@ -37,101 +65,94 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	// Your data here (2A, 2B, 2C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
-	// wbh: persistent massages, which needed to be stored in files later
 	currentTerm int
-	votedFor    *labrpc.ClientEnd
-	log         []Entry
-	termOfLog   []int
+	votedFor    int
+	// getVoteNum int
+	log []Entry
 
-	// wbh: all server's state
 	commitIndex int
 	lastApplied int
 
-	// wbh: leader's unique state
+	//leaderId int // reject kvserver and tell it who is the leader
+
+	status int
+	////election_timer *time.Timer
+	////heartbeat_timer *time.Timer // also the append entries timer ,for 2A is heartbeat
+	//lastResetElectionTime time.Time
+
+	/*
+		TODO: THIS is a instruction for my Index and len
+		TODO: init log[] with a entry{Term:0,commmand:null} (shouldn't be applied or persist in snapshot)
+		TODO: so "len(rf.log) - 1" is the index, and index is same with the arrayindex
+		TODO: rf.lastSSpointIndex + arrayindex = e.GlobalIndex || e = rf.log[rf.GlobalIndex-rf.lastSSPointIndex]
+		TODO: nextIndex is "NExt entry to send to that sever" positive "you have all leader's entries"
+		TODO: matchIndex is "highest known to be replicated on server" pessmistive "you have nothing"
+	*/
 	nextIndex  []int
 	matchIndex []int
 
-	status  int
 	applyCh chan ApplyMsg
+	// SnapShot Point use
+	lastSSPointIndex int
+	lastSSPointTerm  int
 
 	heartbeatTimer *time.Timer
 	timeoutTimer   *time.Timer
-
-	applyCond sync.Cond
-}
-
-// return currentTerm and whether this server
-// believes it is the leader.
-func (rf *Raft) GetState() (int, bool) {
-
-	var term int
-	var isleader bool
-	// Your code here (2A).
-	term = rf.currentTerm
-	isleader = rf.status == LEADER
-
-	return term, isleader
 }
 
 //
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
+// the service or tester wants to create a Raft server. the ports
+// of all the Raft servers (including this one) are in peers[]. this
+// server's port is peers[me]. all the servers' peers[] arrays
+// have the same order. persister is a place for this server to
+// save its persistent state, and also initially holds the most
+// recent saved state, if any. applyCh is a channel on which the
+// tester or service expects Raft to send ApplyMsg messages.
+// Make() must return quickly, so it should start goroutines
+// for any long-running work.
 //
-func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
-}
+func Make(peers []*labrpc.ClientEnd, me int,
+	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	rf := &Raft{}
+	rf.peers = peers
+	rf.persister = persister
+	rf.me = me
 
-//
-// restore previously persisted state.
-//
-func (rf *Raft) readPersist(data []byte) {
-	if data == nil || len(data) < 1 { // bootstrap without any state?
-		return
+	// Your initialization code here (2A, 2B, 2C).
+	rf.mu = sync.RWMutex{}
+	rf.log = []Entry{}
+	rf.log = append(rf.log, Entry{})
+	// rf.termOfLog = make([]int, 0)
+	rf.votedFor = -1
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.dead = 0
+	rf.currentTerm = 0
+	rf.lastSSPointIndex = 0
+	rf.lastSSPointTerm = 0
+	for i, _ := range rf.matchIndex {
+		rf.matchIndex[i] = 0
+		rf.nextIndex[i] = 0
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
-}
 
-//
-// A service wants to switch to snapshot.  Only do so if Raft hasn't
-// have more recent info since it communicate the snapshot on applyCh.
-//
-func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
+	rf.applyCh = applyCh
+	rf.status = FOLLOWER
 
-	// Your code here (2D).
+	DPrintf("[%v] me created, arguments: %+v", rf.me, rf)
 
-	return true
-}
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+	if rf.lastSSPointIndex > 0 {
+		rf.lastApplied = rf.lastSSPointIndex
+	}
 
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
+	// start ticker goroutine to start elections
+	rf.heartbeatTimer = time.NewTimer(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
+	rf.timeoutTimer = time.NewTimer(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
 
+	go rf.ticker()
+
+	return rf
 }
 
 //
@@ -145,7 +166,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 //
 // the first return value is the index that the command will appear at
 // if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
+// Term. the third return value is true if this server believes it is
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
@@ -154,225 +175,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-	if term, isLeader = rf.GetState(); isLeader {
-
-		// 1. leader将客户端command作为新的entry追加到自己的本地log
+	if term, isLeader = rf.GetState(); isLeader && !rf.killed() {
 		rf.mu.Lock()
-		entry := Entry{Command: command, TermOfEntry: rf.currentTerm}
+		index = rf.getLastIndex() + 1
+		entry := Entry{Command: command, Term: rf.currentTerm, Index: index}
 		rf.log = append(rf.log, entry)
-		index = len(rf.log) - 1
-		DPrintf("[Start]: Id %v Term %v State %v\t||\treplicate the command to Log index %v\n",
-			rf.me, rf.currentTerm, rf.status, index)
-		nReplica := 1
-
-		// 接收到客户端命令，并写入log，保存下持久状态
+		DPrintf("[Start]: Id %v Term %v State %v\t||\treplicate the command to Log index %v\n", rf.me, rf.currentTerm, rf.status, index)
 		rf.persist()
-
 		rf.mu.Unlock()
-
-		// 2. 给其他peers并行发送AppendEntries RPC以复制该entry
-		go func(nReplica *int, index int, commitIndex int, term int) {
-			var wg sync.WaitGroup
-			majority := len(rf.peers)/2 + 1
-			agreement := false
-			// isCommitted := false
-
-			rf.mu.Lock()
-			DPrintf("[Start]: Id %v Term %v State %v\t||\tcreate an goroutine for index %v"+
-				" to issue parallel and wait\n", rf.me, rf.currentTerm, rf.status, index)
-			rf.mu.Unlock()
-
-			for i, _ := range rf.peers {
-
-				// 避免进入了新任期，还发送过时的entries，因为leader原则上只能提交当前任期的entry
-				rf.mu.Lock()
-				if rf.currentTerm != term {
-					rf.mu.Unlock()
-					return
-				}
-				rf.mu.Unlock()
-
-				if i == rf.me {
-					continue
-				}
-				wg.Add(1)
-
-				// 给peer:i发送AppendEntries RPC
-				go func(i int, rf *Raft, nReplica *int) {
-
-					defer wg.Done()
-					nextIndex := index + 1
-
-					// 在AppendEntries RPC一致性检查失败后，递减nextIndex，重试
-				retry:
-
-					// 因为涉及到retry操作，避免过时的leader的retry操作继续下去
-					_, isLeader = rf.GetState()
-					if isLeader == false {
-						return
-					}
-
-					// 避免进入了新任期，还发送过时的entries，因为leader原则上只能提交当前任期的entry
-					rf.mu.Lock()
-					if rf.currentTerm != term {
-						rf.mu.Unlock()
-						return
-					}
-					rf.mu.Unlock()
-
-					rf.mu.Lock()
-					// 封装AppendEntriesArgs参数
-					prevLogIndex := nextIndex - 1
-					if prevLogIndex < 0 {
-						DPrintf("[Start]: Id %v Term %v State %v\t||\tinvalid prevLogIndex %v for index %v"+
-							" peer %v\n", rf.me, rf.currentTerm, rf.status, prevLogIndex, index, i)
-					}
-					prevLogTerm := rf.log[prevLogIndex].TermOfEntry
-					entries := make([]Entry, 0)
-					if nextIndex <= index {
-						entries = rf.log[nextIndex : index+1] // [nextIndex, index+1)
-					}
-					args := AppendEntriesArgs{Term: term, LeaderId: rf.me,
-						PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm,
-						Entries: entries, LeaderCommit: commitIndex}
-					DPrintf("[Start]: Id %v Term %v State %v\t||\tissue AppendEntries RPC for index %v"+
-						" to peer %v with nextIndex %v\n", rf.me, rf.currentTerm, rf.status, index, i, prevLogIndex+1)
-					rf.mu.Unlock()
-					var reply AppendEntriesReply
-
-					ok := rf.sendAppendEntries(i, &args, &reply)
-
-					// 发送AppendEntries RPC失败，表明无法和peer建立通信，直接放弃
-					if ok == false {
-						rf.mu.Lock()
-						DPrintf("[Start]: Id %v Term %v State %v\t||\tissue AppendEntries RPC for index %v"+
-							" to peer %v failed\n", rf.me, rf.currentTerm, rf.status, index, i)
-						rf.mu.Unlock()
-						// 发送AppendEntries失败，应该直接返回?
-						return
-					}
-
-					// 图2通常不讨论当你收到旧的RPC回复(replies)时应该做什么。根据经验，
-					// 我们发现到目前为止最简单的方法是首先记录该回复中的任期(the term
-					// in the reply)(它可能高于你的当前任期)，然后将当前任期(current term)
-					// 和你在原始RPC中发送的任期(the term you sent in your original RPC)
-					// 比较。如果两者不同，请删除(drop)回复并返回。只有(only)当两个任期相同，
-					// 你才应该继续处理该回复。通过一些巧妙的协议推理(protocol reasoning)，
-					// 你可以在这里进一步的优化，但是这个方法似乎运行良好(work well)。并且
-					// 不(not)这样做将导致一个充满鲜血、汗水、眼泪和失望的漫长而曲折的(winding)道路。
-					rf.mu.Lock()
-					if rf.currentTerm != args.Term {
-						rf.mu.Unlock()
-						return
-					}
-					rf.mu.Unlock()
-
-					// AppendEntries被拒绝，原因可能是leader任期过时，或者一致性检查未通过
-					if reply.Success == false {
-						rf.mu.Lock()
-						DPrintf("[Start]: Id %v Term %v State %v\t||\tAppendEntries RPC for index %v is rejected"+
-							" by peer %v\n", rf.me, rf.currentTerm, rf.status, index, i)
-						// 如果是leader任期过时，需要切换到follower并立即退出。这里应该使用
-						// args.Term和reply.Term比较，因为一致性检查就是比较的这两者。而直接
-						// 使用rf.currentTerm和reply.Term比较的话，任期过时的可能性就小了。
-						// 因为rf.currentTerm在同步发送RPC的过程中可能已经发生改变！
-						if args.Term < reply.Term {
-							rf.currentTerm = reply.Term
-							rf.votedFor = nil
-							rf.ChangeStatus(FOLLOWER)
-							//rf.resetElectionTimer()
-
-							DPrintf("[Start]: Id %v Term %v State %v\t||\tAppendEntries PRC for index %v is rejected by"+
-								" peer %v due to newer peer's term %v\n", rf.me, rf.currentTerm, rf.status,
-								index, i, reply.Term)
-							rf.persist()
-
-							rf.mu.Unlock()
-							return
-
-						} else { // 如果是一致性检查失败，则递减nextIndex，重试
-
-							// 这里递减nextIndex使用了论文中提到的优化策略：
-							// If desired, the protocol can be optimized to reduce the number of rejected AppendEntries
-							// RPCs. For example,  when rejecting an AppendEntries request, the follower can include the
-							// term of the conflicting entry and the first index it stores for that term. With this
-							// information, the leader can decrement nextIndx to bypass all of the conflicting entries
-							// in that term; one AppendEntries RPC will be required for each term with conflicting entries,
-							// rather than one RPC per entry.
-							// 只存在reply.ConflictFirstIndex < nextIndex，由于一致性检查是从nextIndex-1(prevLogIndex)处
-							// 查看的，所以不会出现reply.ConflictFirstIndex >= nextIndex。
-
-							nextIndex--
-
-							DPrintf("[Start]:[%v] Term %v Status %v, AppendEntries RPC for index %v is rejected by [%v] due to less pre index, so --", rf.me, rf.currentTerm, rf.status, index, i)
-
-							rf.mu.Unlock()
-							goto retry
-
-						}
-					} else { // AppendEntries RPC发送成功
-
-						rf.mu.Lock()
-						DPrintf("[Start]: Id %v Term %v State %v\t||\tsend AppendEntries PRC for index %v to peer %v success\n",
-							rf.me, rf.currentTerm, rf.status, index, i)
-
-						// 如果当前index更大，则更新该peer对应的nextIndex和matchIndex
-						if rf.nextIndex[i] < index+1 {
-							rf.nextIndex[i] = index + 1
-							rf.matchIndex[i] = index
-						}
-						*nReplica += 1
-						DPrintf("[Start]: Id %v Term %v State %v\t||\tnReplica %v for index %v\n",
-							rf.me, rf.currentTerm, rf.status, *nReplica, index)
-
-						// 如果已经将该entry复制到了大多数peers，接着检查index编号的这条entry的任期
-						// 是否为当前任期，如果是则可以提交该条目
-						if agreement == false && rf.status == LEADER && *nReplica >= majority {
-							agreement = true
-							DPrintf("[Start]: Id %v Term %v State %v\t||\thas replicated the entry with index %v"+
-								" to the majority with nReplica %v\n", rf.me, rf.currentTerm, rf.status,
-								index, *nReplica)
-
-							// 如果index大于commitIndex，而且index编号的entry的任期等于当前任期，提交该entry
-							if rf.commitIndex < index && rf.log[index].TermOfEntry == rf.currentTerm {
-								DPrintf("[Start]: Id %v Term %v State %v\t||\tadvance the commitIndex to %v\n",
-									rf.me, rf.currentTerm, rf.status, index)
-								// isCommitted = true
-
-								// 提升commitIndex
-								rf.commitIndex = index
-
-								// 当被提交的entries被复制到多数peers后，可以发送一次心跳通知其他peers更新commitIndex
-								go rf.BroadcastHeartbeat()
-
-								// 更新了commitIndex可以给applyCond条件变量发信号，
-								// 以应用新提交的entries到状态机
-								DPrintf("[Start]: Id %v Term %v State %v\t||\tapply updated commitIndex %v to applyCh\n",
-									rf.me, rf.currentTerm, rf.status, rf.commitIndex)
-								rf.applyCond.Broadcast()
-
-								//// 已完成了多数者日志的复制，保存下持久状态
-								//rf.persist()
-							}
-
-						}
-						//// 当被提交的entries被复制到所有peers后，可以发送一次心跳通知其他peers更新commitIndex
-						//if *nReplica == len(rf.peers) && isCommitted {
-						//	// 同时发送给其他peers发送一次心跳，使它们更新commitIndex
-						//	go rf.broadcastHeartbeat()
-						//}
-
-						rf.mu.Unlock()
-					}
-
-				}(i, rf, nReplica)
-			}
-
-			// 等待所有发送AppendEntries RPC的goroutine退出
-			wg.Wait()
-
-		}(&nReplica, index, rf.commitIndex, rf.currentTerm)
-
 	}
 	return index, term, isLeader
 }
@@ -402,10 +212,10 @@ func (rf *Raft) killed() bool {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
+		applyTimer := time.NewTimer(APPLIED_TIMEOUT * time.Millisecond)
 		select {
 		case <-rf.heartbeatTimer.C:
 			rf.mu.Lock()
@@ -417,378 +227,90 @@ func (rf *Raft) ticker() {
 			} else {
 				rf.mu.Unlock()
 			}
-			rf.heartbeatTimer.Reset(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
+			rf.heartbeatTimer = time.NewTimer(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
 		case <-rf.timeoutTimer.C:
-			rf.mu.Lock()
 			if rf.status != LEADER {
 				DPrintf("[%v], as status of %v, going to issue an election", rf.me, rf.status)
 				rf.ChangeStatus(CANDIDATE)
-				rf.currentTerm++
-				// rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
-				rf.IssueElection(rf.currentTerm)
 				// rf.heartbeatTimer.Reset(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
 			}
-			rf.mu.Unlock()
-			rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+			rf.timeoutTimer = time.NewTimer(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+		case <-applyTimer.C:
+			rf.committedToApplied()
+			applyTimer = time.NewTimer(APPLIED_TIMEOUT * time.Millisecond)
 		}
 	}
 }
 
-func (rf *Raft) IssueElection(electionTerm int) {
-	// rf.currentTerm++
-	rf.votedFor = rf.peers[rf.me]
+func (rf *Raft) committedToApplied() {
+	// put the committed entry to apply on the state machine
+	rf.mu.Lock()
+	if rf.lastApplied >= rf.commitIndex {
+		rf.mu.Unlock()
+		return
+	}
 
-	mu := sync.Mutex{}
-	cond := sync.NewCond(&mu)
-	count := 1
-	finished := 1
-	lastLogTerm := 0
-	//if len(rf.log) != 0 {
-	//	lastLogTerm = rf.termOfLog[len(rf.log)-1]
-	//}
-	args := &RequestVoteArgs{
-		Term:         electionTerm,
-		CandidateId:  rf.me,
-		LastLogIndex: len(rf.log) - 1,
-		LastLogTerm:  lastLogTerm,
+	Messages := make([]ApplyMsg, 0)
+	// log.Printf("[!!!!!!--------!!!!!!!!-------]Restart, LastSSP: %d, LastApplied :%d, commitIndex %d",rf.lastSSPointIndex,rf.lastApplied,rf.commitIndex)
+	//log.Printf("[ApplyEntry] LastApplied %d, commitIndex %d, lastSSPindex %d, len %d, lastIndex %d",rf.lastApplied,rf.commitIndex,rf.lastSSPointIndex, len(rf.log),rf.getLastIndex())
+	for rf.lastApplied < rf.commitIndex && rf.lastApplied < rf.getLastIndex() {
+		//for rf.lastApplied < rf.commitIndex {
+		rf.lastApplied += 1
+		//DPrintf("[ApplyEntry---] %d apply entry index %d, command %v, term %d, lastSSPindex %d",rf.me,rf.lastApplied,rf.getLogWithIndex(rf.lastApplied).Command,rf.getLogWithIndex(rf.lastApplied).Term,rf.lastSSPointIndex)
+		Messages = append(Messages, ApplyMsg{
+			CommandValid:  true,
+			SnapshotValid: false,
+			CommandIndex:  rf.lastApplied,
+			Command:       rf.getLogWithIndex(rf.lastApplied).Command,
+		})
 	}
-	id := GenerateId()
-	DPrintf("[%v], in term %v, issues an election and broadcasts RequestVoteArgs(%v): %+v", rf.me, electionTerm, id, *args)
-	for i, _ := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		go func(index, id int) {
-			reply := &RequestVoteReply{}
-			ok := rf.sendRequestVote(index, args, reply)
-			mu.Lock()
-			defer mu.Unlock()
-			if ok != true {
-				DPrintf("[%v] send RequestVotes(%v) to [%v] fails, args: %+v", rf.me, id, index, args)
-			} else {
-				DPrintf("[%v] receives RequestVoteReply(%v) {%+v} from [%v] in term %v", rf.me, id, *reply, index, electionTerm)
-				// DPrintf("$$$$$$$$$$$$$$$$$$$$$$$$$$\n%v,%v,%v", args.Term, rf.currentTerm, rf.status)
-				if args.Term == rf.currentTerm && rf.status == CANDIDATE {
-					if reply.Term > rf.currentTerm {
-						DPrintf("[%v]'s RequestVote in term %v finds a new leader [%v] with term %v, step into follower", rf.me, args.Term, index, reply.Term)
-						rf.UpdateCurrentTerm(reply.Term)
-					} else if reply.VoteGranted == true {
-						//DPrintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\nenter here?")
-						count++
-					}
-				} else {
-					// rf.ChangeStatus(FOLLOWER)
-					finished = len(rf.peers)
-					cond.Broadcast()
-					return
-				}
-			}
-			finished++
-			cond.Broadcast()
-		}(i, id)
+	rf.mu.Unlock()
+
+	for _, messages := range Messages {
+		rf.applyCh <- messages
 	}
-	mu.Lock()
-	for count <= len(rf.peers)/2 && finished != len(rf.peers) {
-		cond.Wait()
-	}
-	DPrintf("[%v] election result: count:%v, finished:%v, len(rf.peers)/2 :%v, electionTerm: %v, rf.currentTerm:%v", rf.me, count, finished, len(rf.peers)/2, electionTerm, rf.currentTerm)
-	if count > len(rf.peers)/2 && electionTerm == rf.currentTerm {
-		DPrintf("[%v] receives majority votes in term %v and becomes leader", rf.me, electionTerm)
-		rf.ChangeStatus(LEADER)
-		rf.BroadcastHeartbeat()
-		//DPrintf("((((((((((((((((((((((((((((((((((((")
+
+}
+
+// change the raft server state and do something init
+func (rf *Raft) ChangeStatus(howtochange int) {
+
+	if howtochange == FOLLOWER {
+		rf.status = FOLLOWER
+		rf.votedFor = -1
+		//rf.getVoteNum = 0
 		rf.persist()
+		rf.timeoutTimer = time.NewTimer(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+		rf.heartbeatTimer = time.NewTimer(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
 	}
-	mu.Unlock()
-}
 
-//
-// the service or tester wants to create a Raft server. the ports
-// of all the Raft servers (including this one) are in peers[]. this
-// server's port is peers[me]. all the servers' peers[] arrays
-// have the same order. persister is a place for this server to
-// save its persistent state, and also initially holds the most
-// recent saved state, if any. applyCh is a channel on which the
-// tester or service expects Raft to send ApplyMsg messages.
-// Make() must return quickly, so it should start goroutines
-// for any long-running work.
-//
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
-
-	// Your initialization code here (2A, 2B, 2C).
-	rf.mu = sync.RWMutex{}
-
-	rf.log = make([]Entry, 1)
-	// rf.termOfLog = make([]int, 0)
-	rf.votedFor = nil
-	rf.commitIndex = -1
-	rf.lastApplied = -1
-	rf.dead = 0
-	rf.currentTerm = 0
-	rf.matchIndex = make([]int, len(peers))
-	rf.nextIndex = make([]int, len(peers))
-	for i, _ := range rf.matchIndex {
-		rf.matchIndex[i] = -1
-		rf.nextIndex[i] = 0
+	if howtochange == CANDIDATE {
+		rf.status = CANDIDATE
+		rf.votedFor = rf.me
+		rf.currentTerm += 1
+		rf.persist()
+		rf.IssueElection(rf.currentTerm)
+		rf.timeoutTimer = time.NewTimer(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+		rf.heartbeatTimer = time.NewTimer(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
 	}
-	rf.peers = peers
 
-	rf.applyCh = applyCh
-	rf.status = FOLLOWER
+	if howtochange == LEADER {
+		rf.status = LEADER
+		rf.votedFor = -1
+		rf.persist()
 
-	rf.heartbeatTimer = time.NewTimer(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
-	rf.timeoutTimer = time.NewTimer(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
-
-	DPrintf("[%v] me created, arguments: %+v", rf.me, rf)
-
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-
-	// start ticker goroutine to start elections
-	go rf.ticker()
-
-	return rf
-}
-
-// Reset Status,VoteFor, currentTerm
-func (rf *Raft) UpdateCurrentTerm(term int) {
-	DPrintf("[%v] updateTerm from %v to %v, and update its status from %v to %v", rf.me, rf.currentTerm, term, rf.status, FOLLOWER)
-	rf.currentTerm = term
-	rf.status = FOLLOWER
-	rf.votedFor = nil
-}
-
-func (rf *Raft) BroadcastHeartbeat() {
-	term := rf.currentTerm
-	prevLogIndex := len(rf.log) - 1
-	prevLogTerm := 0
-	//if prevLogIndex != -1 {
-	//	prevLogTerm = rf.termOfLog[prevLogIndex]
-	//}
-	leaderCommit := rf.commitIndex
-	for i, _ := range rf.peers {
-		if i == rf.me {
-			continue
+		rf.nextIndex = make([]int, len(rf.peers))
+		for i := 0; i < len(rf.peers); i++ {
+			//rf.nextIndex[i] = len(rf.log)
+			rf.nextIndex[i] = rf.getLastIndex() + 1
 		}
-		go func(index int) {
-			args := AppendEntriesArgs{
-				Term:         term,
-				LeaderId:     rf.me,
-				PrevLogIndex: prevLogIndex,
-				PrevLogTerm:  prevLogTerm,
-				Entries:      nil,
-				LeaderCommit: leaderCommit,
-			}
-			rf.sendAppendEntries(index, &args, &AppendEntriesReply{})
-		}(i)
-	}
-	//DPrintf("|||||||||||||||||||||||||||||||")
-}
 
-// leader给其他peers广播一次心跳。因为发送心跳也要进行一致性检查，
-// 为了不因为初始时的日志不一致而使得心跳发送失败，而其他peers因为
-// 接收不到心跳而心跳超时，进而发起不需要的(no-needed)选举，所以
-// 发送心跳也需要在一致性检查失败时进行重试。
-//func (rf *Raft) BroadcastHeartbeat() {
-//
-//	// 非leader不能发送心跳
-//	if _, isLeader := rf.GetState(); isLeader == false {
-//		return
-//	}
-//
-//	rf.mu.Lock()
-//	// 发送心跳时更新下发送时间
-//	// rf.latestIssueTime = time.Now().UnixNano()
-//	rf.mu.Unlock()
-//
-//	go func() {
-//		var wg sync.WaitGroup
-//		keep := true
-//
-//		for i, _ := range rf.peers {
-//
-//			// 读keep需要加锁
-//			rf.mu.Lock()
-//			if keep == false {
-//				break
-//			}
-//			rf.mu.Unlock()
-//
-//			if i == rf.me {
-//				continue
-//			}
-//			wg.Add(1)
-//
-//			go func(i int, rf *Raft, keep *bool) {
-//				defer wg.Done()
-//
-//				// 在AppendEntries RPC一致性检查失败后，递减nextIndex，重试
-//			retry:
-//
-//				// 因为涉及到retry操作，避免过时的leader的retry操作继续下去
-//				if _, isLeader := rf.GetState(); isLeader == false {
-//					return
-//				}
-//
-//				rf.mu.Lock()
-//				// 封装AppendEntriesArgs参数
-//				prevLogIndex := rf.nextIndex[i] - 1
-//				if prevLogIndex < 0 {
-//					DPrintf("[Broadcast]: Id %d Term %d State %v\t||\tinvalid prevLogIndex %d for peer %d\n",
-//						rf.me, rf.currentTerm, rf.status, prevLogIndex, i)
-//				}
-//				prevLogTerm := rf.log[prevLogIndex].TermOfEntry
-//				// 概念上将心跳不携带entries，这指的是当nextIndex为log的尾后位置时的一般情况。
-//				// 但是如果nextIndex小于log的尾后位置，这是心跳必须携带entries，因为这次心跳可能就会
-//				// 通过一致性检查，并可能提升commitIndex，这时会给applyCond条件变量发信号以提交
-//				// [lastApplied+1, commitIndex]之间的entries。如果此次心跳没有携带entries，则不会有
-//				// 日志追加，所以提交的可能是和leader不一致的过时的entries，这就出现了严重错误。所以
-//				// 这种情况下心跳要携带entries。
-//				entries := rf.log[prevLogIndex+1:]
-//				args := AppendEntriesArgs{Term: rf.currentTerm, LeaderId: rf.me,
-//					PrevLogIndex: prevLogIndex, PrevLogTerm: prevLogTerm,
-//					Entries: entries, LeaderCommit: rf.commitIndex}
-//				DPrintf("[Broadcast]: Id %d Term %d State %v\t||\tissue heartbeat to peer %d"+
-//					" with nextIndex %d\n", rf.me, rf.currentTerm, rf.status, i, prevLogIndex+1)
-//				rf.mu.Unlock()
-//				var reply AppendEntriesReply
-//
-//				ok := rf.sendAppendEntries(i, &args, &reply)
-//
-//				// 心跳发送失败，表明无法和peer建立通信，直接退出
-//				if ok == false {
-//					rf.mu.Lock()
-//					DPrintf("[Broadcast]: Id %d Term %d State %v\t||\tissue heartbeat to peer %d failed\n",
-//						rf.me, rf.currentTerm, rf.status, i)
-//					rf.mu.Unlock()
-//					return
-//				}
-//
-//				// heartbeat被拒绝，原因可能是leader任期过时，或者一致性检查没有通过。
-//				// 发送心跳也可能出现一致性检查不通过，因为一致性检查是查看leader的nextIndex之前的
-//				// entry和指定peer的log中那个索引的日志是否匹配。即使心跳中不携带任何日志，但一致性
-//				// 检查仍会因为nextIndex而失败，这时需要递减nextIndex然后重试。
-//				if reply.Success == false {
-//
-//					rf.mu.Lock()
-//					DPrintf("[Broadcast]: Id %d Term %d State %v\t||\theartbeat is rejected by peer %d\n",
-//						rf.me, rf.currentTerm, rf.status, i)
-//
-//					// leader任期过时，需要切换到follower
-//					if rf.currentTerm < reply.Term {
-//						// If RPC request or response contains term T > currentTerm, set currentTerm = T,
-//						// convert to follower
-//						rf.UpdateCurrentTerm(reply.Term)
-//						rf.timeoutTimer.Reset(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
-//						*keep = false
-//						DPrintf("[Broadcast]: Id %d Term %d State %v\t||\theartbeat is rejected by peer %d"+
-//							" due to newer peer's term %d\n", rf.me, rf.currentTerm, rf.status, i, reply.Term)
-//						rf.mu.Unlock()
-//						return
-//					} else { // 如果是一致性检查未通过，则递减nextIndex，重试
-//
-//						conflictFirstIndex := reply.ConflictFirstIndex
-//						conflictTerm := rf.log[conflictFirstIndex].TermOfEntry
-//						// 判断conflictFirstIndex处的entry是否和reply的peer一致，即term相等
-//						if conflictTerm == reply.ConflictTerm {
-//							// 相等，则nextIndex直接设置为conflictFirstIndex + 1
-//							rf.nextIndex[i] = conflictFirstIndex + 1
-//						} else {
-//							// 若不等，则递减conflictFirstIndex，直到entry为leader的log中第一个出现conflictTerm的index
-//							for k := conflictFirstIndex - 1; k >= 0; k-- {
-//								if rf.log[k].TermOfEntry != conflictTerm {
-//									break
-//								} else {
-//									conflictFirstIndex -= 1
-//								}
-//							}
-//							rf.nextIndex[i] = conflictFirstIndex + 1
-//						}
-//						// 为避免活锁，这里需要判断下prevLogIndex(rf.nextIndex[i]-1)的任期是否等于reply.ConflictTerm。
-//						// 如果不等，则说明rf.nextIndex[i]没有前进，遇到“活锁”，这时简单的将其减1即可。
-//						nextIndex := rf.nextIndex[i]
-//						if nextIndex-1 == reply.ConflictFirstIndex &&
-//							rf.log[nextIndex-1].TermOfEntry != reply.ConflictTerm {
-//							rf.nextIndex[i] -= 1
-//						}
-//
-//						DPrintf("[Broadcast]: Id %d Term %d State %v\t||\theartbeat is rejected by peer %d"+
-//							" due to the consistency check failed\n", rf.me, rf.currentTerm, rf.status, i)
-//						DPrintf("[Broadcast]: Id %d Term %d State %v\t||\tretry heartbeat with"+
-//							" conflictFirstIndex %d and conflictTerm %d nextIndex %d\n", rf.me, rf.currentTerm,
-//							rf.status, conflictFirstIndex, conflictTerm, rf.nextIndex[i])
-//						rf.mu.Unlock()
-//						goto retry
-//					}
-//
-//				} else {
-//					// 心跳发送成功
-//					rf.mu.Lock()
-//					// 更新下该peer对应的nextIndex和matchIndex
-//					if rf.nextIndex[i] < len(rf.log) {
-//						rf.nextIndex[i] = len(rf.log)
-//						rf.matchIndex[i] = rf.nextIndex[i] - 1
-//					}
-//					//rf.matchIndex[i] = rf.nextIndex[i] - 1
-//					DPrintf("[Broadcast]: Id %d Term %d State %v\t||\tsend heartbeat to peer %d success\n",
-//						rf.me, rf.currentTerm, rf.status, i)
-//					rf.mu.Unlock()
-//				}
-//
-//			}(i, rf, &keep)
-//
-//		}
-//
-//		//等待所有发送goroutine结束
-//		wg.Wait()
-//
-//	}()
-//}
-
-func (rf *Raft) ChangeStatus(status int) {
-	DPrintf("[%v] switch status from %v to %v", rf.me, rf.status, status)
-	rf.status = status
-}
-
-func (rf *Raft) GetFirstLog() *Entry {
-	return &(rf.log[0])
-}
-
-func (rf *Raft) GetLastLog() *Entry {
-	return &(rf.log[len(rf.log)-1])
-}
-
-// a dedicated applier goroutine to guarantee that each log will be push into applyCh exactly once, ensuring that service's applying entries and raft's committing entries can be parallel
-func (rf *Raft) applier() {
-	for rf.killed() == false {
-		rf.mu.Lock()
-		// if there is no need to apply entries, just release CPU and wait other goroutine's signal if they commit new entries
-		for rf.lastApplied >= rf.commitIndex {
-			rf.applyCond.Wait()
-		}
-		firstIndex, commitIndex, lastApplied := rf.GetFirstLog().Index, rf.commitIndex, rf.lastApplied
-		entries := make([]Entry, commitIndex-lastApplied)
-
-		// lastApplied 3,
-		copy(entries, rf.log[lastApplied+1-firstIndex:commitIndex+1-firstIndex])
-		rf.mu.Unlock()
-		for _, entry := range entries {
-			rf.applyCh <- ApplyMsg{
-				CommandValid: true,
-				Command:      entry.Command,
-				CommandIndex: entry.Index,
-			}
-		}
-		rf.mu.Lock()
-		DPrintf("{Node %v} applies entries %v-%v in term %v", rf.me, rf.lastApplied, commitIndex, rf.currentTerm)
-		// use commitIndex rather than rf.commitIndex because rf.commitIndex may change during the Unlock() and Lock()
-		// use Max(rf.lastApplied, commitIndex) rather than commitIndex directly to avoid concurrently InstallSnapshot rpc causing lastApplied to rollback
-		rf.lastApplied = Max(rf.lastApplied, commitIndex)
-		rf.mu.Unlock()
+		rf.matchIndex = make([]int, len(rf.peers))
+		//rf.matchIndex[rf.me] = len(rf.log) - 1
+		rf.matchIndex[rf.me] = rf.getLastIndex()
+		rf.BroadcastHeartbeat()
+		rf.timeoutTimer = time.NewTimer(RandomTimeBetween(TIMEOUT_LOWER_BOUND, TIMEOUT_UPPER_BOUND))
+		rf.heartbeatTimer = time.NewTimer(RandomTimeBetween(HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL+1))
+		//rf.leaderAppendEntries()
 	}
 }

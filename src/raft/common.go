@@ -4,7 +4,7 @@ const (
 	// timeOut time range: ms
 	TIMEOUT_UPPER_BOUND = 250
 	TIMEOUT_LOWER_BOUND = 150
-	HEARTBEAT_INTERVAL  = 100
+	HEARTBEAT_INTERVAL  = 50
 
 	// status
 	LEADER    = 1
@@ -14,4 +14,6 @@ const (
 	// election result
 	WIN_ELECTION  = 1
 	LOSE_ELECTION = 2
+
+	APPLIED_TIMEOUT = 28
 )
